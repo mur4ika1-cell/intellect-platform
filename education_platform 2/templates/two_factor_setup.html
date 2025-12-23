@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Настройка двухфакторной аутентификации{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-box">
+        <h1>Настройка 2FA</h1>
+        <p>Отсканируйте QR-код в приложении-аутентификаторе (Google Authenticator, Authy и т.д.) или введите секрет вручную.</p>
+        <div style="text-align:center; margin: 1rem 0;">
+            <img src="{{ qr_uri }}" alt="QR" style="max-width: 220px;" />
+            <div style="margin-top:0.5rem; color: #666;">Секрет: <code>{{ secret }}</code></div>
+        </div>
+
+        <form method="POST">
+            <div class="form-group">
+                <label>Введите код из приложения:</label>
+                <input type="text" name="token" required>
+            </div>
+            <button class="btn btn-primary" type="submit">Подтвердить и включить 2FA</button>
+        </form>
+
+        <p style="margin-top:1rem; color:#666;">Если вы не уверены, используйте приложение Google Authenticator или Authy.</p>
+    </div>
+</div>
+{% endblock %}
