@@ -18,7 +18,7 @@ except Exception as e:
     GigaChat = None
 
 from datetime import datetime
-from models import db, User, TestResult, PhysicalEducationResult, Schedule, Homework, LearningMaterial, TrainingProgram, NutritionDiary, Recipe, FitnessGame, Message
+from models import db, User, TestResult, PhysicalEducationResult, Schedule, Homework, LearningMaterial, TrainingProgram, NutritionDiary, Recipe, Message, GameSession, GameCard, GameParticipant, GameAnswer
 from config import Config
 import json
 import os
@@ -1272,80 +1272,7 @@ def api_generate_recipe():
             return jsonify({'success': False, 'error': f'Ошибка GigaChat: {error_msg}'}), 500
 
 
-# ФИТНЕС ИГРЫ
-@app.route('/fitness-games')
-@login_required
-def fitness_games():
-    games_list = [
-        {
-            'id': 'dance',
-            'title': 'Танцевальная игра',
-            'description': 'Повторяйте движения за виртуальным тренером',
-            'game_type': 'cardio',
-            'difficulty_level': 'medium'
-        },
-        {
-            'id': 'boxing',
-            'title': 'Виртуальный бокс',
-            'description': 'Тренируйте реакцию и координацию',
-            'game_type': 'intense',
-            'difficulty_level': 'hard'
-        },
-        {
-            'id': 'ninja',
-            'title': 'Ниндзя-рефлексы',
-            'description': 'Уклоняйтесь от виртуальных препятствий',
-            'game_type': 'agility',
-            'difficulty_level': 'easy'
-        }
-    ]
 
-    stats = {
-        'total_games': 0,
-        'total_score': 0,
-        'avg_accuracy': 0
-    }
-    try:
-        results = FitnessGame.query.filter_by(user_id=current_user.id).all()
-        if results:
-            stats['total_games'] = len(results)
-            stats['total_score'] = sum(getattr(r, 'score', 0) or 0 for r in results)
-            stats['avg_accuracy'] = round((sum(getattr(r, 'accuracy', 0) or 0 for r in results) / len(results)), 1)
-    except Exception:
-        pass
-
-    return render_template('fitness_games.html', games=games_list, stats=stats)
-
-
-@app.route('/fitness-games/save-result', methods=['POST'])
-@login_required
-def save_game_result():
-    data = request.get_json()
-    game_result = FitnessGame(
-        user_id=current_user.id,
-        game_type=data['game_type'],
-        score=data['score'],
-        accuracy=data['accuracy'],
-        created_at=datetime.utcnow()
-    )
-    db.session.add(game_result)
-    db.session.commit()
-    return jsonify({'status': 'success'})
-
-
-@app.route('/fitness-games/stats')
-@login_required
-def get_game_stats():
-    games = FitnessGame.query.filter_by(user_id=current_user.id).all()
-    total_games = len(games)
-    total_score = sum(game.score for game in games) if games else 0
-    avg_accuracy = sum(game.accuracy for game in games) / total_games if games else 0
-    
-    return jsonify({
-        'total_games': total_games,
-        'total_score': total_score,
-        'avg_accuracy': round(avg_accuracy, 1)
-    })
 
 
 # РЕЦЕПТЫ
@@ -1557,6 +1484,538 @@ def search_users():
     } for user in users]
     
     return jsonify({'success': True, 'users': users_data})
+
+
+# ============================================
+# ИГРА В КАРТОЧКИ - МАРШРУТЫ
+# ============================================
+
+# Главная страница игры в карточки
+@app.route('/card-game')
+@login_required
+def card_game():
+    # Мои созданные сессии
+    my_sessions = GameSession.query.filter_by(creator_id=current_user.id).order_by(GameSession.created_at.desc()).all()
+    
+    # Сессии, в которых я участвую
+    my_participations = GameParticipant.query.filter_by(user_id=current_user.id).all()
+    participated_session_ids = [p.session_id for p in my_participations]
+    joined_sessions = GameSession.query.filter(GameSession.id.in_(participated_session_ids)).order_by(GameSession.created_at.desc()).all() if participated_session_ids else []
+    
+    return render_template('card_game.html', 
+                         my_sessions=my_sessions, 
+                         joined_sessions=joined_sessions)
+
+
+# Создать новую игровую сессию
+@app.route('/card-game/create', methods=['GET', 'POST'])
+@login_required
+def create_card_game():
+    if request.method == 'POST':
+        data = request.get_json() if request.is_json else request.form
+        
+        title = data.get('title', '').strip()
+        subject = data.get('subject', '').strip()
+        topic = data.get('topic', '').strip()
+        material_text = data.get('material_text', '').strip()
+        num_cards = int(data.get('num_cards', 10))
+        
+        if not title or not subject or not topic:
+            return jsonify({'success': False, 'error': 'Заполните все обязательные поля'}), 400
+        
+        # Создаем сессию
+        session = GameSession(
+            creator_id=current_user.id,
+            title=title,
+            subject=subject,
+            topic=topic,
+            material_text=material_text,
+            num_cards=num_cards,
+            status='waiting'
+        )
+        db.session.add(session)
+        db.session.commit()
+        
+        return jsonify({'success': True, 'session_id': session.id})
+    
+    return render_template('card_game_create.html')
+
+
+# Просмотр игровой сессии
+@app.route('/card-game/session/<int:session_id>')
+@login_required
+def view_card_game_session(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Проверка доступа
+    is_creator = session.creator_id == current_user.id
+    participant = GameParticipant.query.filter_by(session_id=session_id, user_id=current_user.id).first()
+    
+    if not is_creator and not participant:
+        flash('У вас нет доступа к этой игровой сессии', 'error')
+        return redirect(url_for('card_game'))
+    
+    participants = GameParticipant.query.filter_by(session_id=session_id).all()
+    cards = GameCard.query.filter_by(session_id=session_id).order_by(GameCard.order_index).all()
+    
+    return render_template('card_game_session.html',
+                         session=session,
+                         is_creator=is_creator,
+                         participants=participants,
+                         cards=cards,
+                         current_participant=participant)
+
+
+# API: Пригласить друга в игру
+@app.route('/api/card-game/session/<int:session_id>/invite', methods=['POST'])
+@login_required
+def invite_to_card_game(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Только создатель может приглашать
+    if session.creator_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Только создатель может приглашать участников'}), 403
+    
+    data = request.get_json()
+    user_id = data.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'error': 'Не указан пользователь'}), 400
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'success': False, 'error': 'Пользователь не найден'}), 404
+    
+    # Проверяем, не приглашен ли уже
+    existing = GameParticipant.query.filter_by(session_id=session_id, user_id=user_id).first()
+    if existing:
+        return jsonify({'success': False, 'error': 'Пользователь уже приглашен'}), 400
+    
+    # Создаем участника
+    participant = GameParticipant(
+        session_id=session_id,
+        user_id=user_id,
+        status='invited'
+    )
+    db.session.add(participant)
+    
+    # Отправляем сообщение-приглашение
+    message = Message(
+        sender_id=current_user.id,
+        receiver_id=user_id,
+        content=f'🎮 Вас пригласили в игру "{session.title}"! Тема: {session.topic}. Присоединяйтесь: /card-game/session/{session_id}',
+        is_read=False
+    )
+    db.session.add(message)
+    db.session.commit()
+    
+    return jsonify({'success': True, 'participant_id': participant.id})
+
+
+# API: Присоединиться к игре
+@app.route('/api/card-game/session/<int:session_id>/join', methods=['POST'])
+@login_required
+def join_card_game(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Проверяем, есть ли приглашение
+    participant = GameParticipant.query.filter_by(session_id=session_id, user_id=current_user.id).first()
+    
+    if not participant:
+        # Если нет приглашения, создаем участника
+        participant = GameParticipant(
+            session_id=session_id,
+            user_id=current_user.id,
+            status='joined'
+        )
+        db.session.add(participant)
+    else:
+        participant.status = 'joined'
+    
+    db.session.commit()
+    
+    return jsonify({'success': True, 'status': 'joined'})
+
+
+# API: Генерация карточек через GigaChat
+@app.route('/api/card-game/session/<int:session_id>/generate-cards', methods=['POST'])
+@login_required
+def generate_cards(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Только создатель может генерировать карточки
+    if session.creator_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Только создатель может генерировать карточки'}), 403
+    
+    # Проверка доступности GigaChat
+    if not GIGACHAT_AVAILABLE or GigaChat is None:
+        print("[WARNING] GigaChat недоступен для генерации карточек")
+        # Fallback - создаем простые карточки
+        cards_data = []
+        for i in range(1, session.num_cards + 1):
+            cards_data.append({
+                'question': f'Вопрос {i} по теме: {session.topic}',
+                'answer': f'Ответ на вопрос {i}',
+                'explanation': f'Объяснение для вопроса {i}'
+            })
+        
+        # Сохраняем карточки
+        for idx, card_data in enumerate(cards_data):
+            card = GameCard(
+                session_id=session.id,
+                question=card_data['question'],
+                answer=card_data['answer'],
+                explanation=card_data['explanation'],
+                order_index=idx
+            )
+            db.session.add(card)
+        
+        db.session.commit()
+        return jsonify({'success': True, 'cards_count': len(cards_data), 'warning': 'GigaChat недоступен, использованы тестовые карточки'})
+    
+    credentials = app.config.get('GIGACHAT_CREDENTIALS')
+    if not credentials:
+        return jsonify({'success': False, 'error': 'GIGACHAT_CREDENTIALS не настроены'}), 500
+    
+    try:
+        print(f"[INFO] Генерация {session.num_cards} карточек через GigaChat...")
+        
+        with GigaChat(
+            credentials=credentials,
+            verify_ssl_certs=False,
+            scope="GIGACHAT_API_PERS",
+            temperature=0.3
+        ) as giga:
+            
+            if session.material_text:
+                prompt = f"""Ты - эксперт по образованию. Твоя задача создать ровно {session.num_cards} учебных карточек.
+
+ВНИМАНИЕ: Верни ТОЛЬКО валидный JSON. Никакого текста до или после JSON!
+
+Материал:
+{session.material_text[:3000]}
+
+Вот строгий шаблон JSON, которому ты ДОЛЖЕН следовать:
+{{"cards":[{{"question":"Вопрос 1","answer":"Ответ 1","explanation":"Объяснение 1"}},{{"question":"Вопрос 2","answer":"Ответ 2","explanation":"Объяснение 2"}}]}}
+
+ПРАВИЛА:
+1. Верни ТОЛЬКО JSON (без Markdown блоков, без текста, без пояснений)
+2. Массив "cards" должен содержать ровно {session.num_cards} объектов
+3. Каждый объект должен иметь ключи: "question", "answer", "explanation"
+4. Все значения - строки (strings)
+5. question: проверяет понимание материала (1-2 предложения)
+6. answer: конкретный правильный ответ (1-2 предложения)
+7. explanation: подробное объяснение (3-4 предложения)
+
+Стартуй с {{ и кончай с }}. Больше ничего."""
+            else:
+                prompt = f"""Ты - эксперт по образованию. Твоя задача создать ровно {session.num_cards} учебных карточек.
+
+ВНИМАНИЕ: Верни ТОЛЬКО валидный JSON. Никакого текста до или после JSON!
+
+Предмет: {session.subject}
+Тема: {session.topic}
+
+Вот строгий шаблон JSON, которому ты ДОЛЖЕН следовать:
+{{"cards":[{{"question":"Вопрос 1","answer":"Ответ 1","explanation":"Объяснение 1"}},{{"question":"Вопрос 2","answer":"Ответ 2","explanation":"Объяснение 2"}}]}}
+
+ПРАВИЛА:
+1. Верни ТОЛЬКО JSON (без Markdown блоков, без текста, без пояснений)
+2. Массив "cards" должен содержать ровно {session.num_cards} объектов
+3. Каждый объект должен иметь ключи: "question", "answer", "explanation"
+4. Все значения - строки (strings)
+5. question: проверяет понимание темы (1-2 предложения)
+6. answer: конкретный правильный ответ (1-2 предложения)
+7. explanation: подробное объяснение (3-4 предложения)
+
+Стартуй с {{ и кончай с }}. Больше ничего."""
+
+            response = giga.chat(prompt)
+            content = response.choices[0].message.content.strip()
+            
+            print(f"[INFO] GigaChat ответ (карточки) первые 500 символов: {content[:500]}...")
+            
+            # Агрессивная очистка markdown кода
+            content = content.replace('```json', '').replace('```python', '').replace('```', '').strip()
+            
+            # Найди первый { и последний }
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            
+            if json_start == -1 or json_end <= json_start:
+                print(f"[ERROR] Нет JSON скобок в ответе: {content[:200]}")
+                return jsonify({'success': False, 'error': 'Нет JSON в ответе GigaChat'}), 500
+            
+            json_str = content[json_start:json_end]
+            
+            # Попытка парса JSON с обработкой ошибок
+            try:
+                data = json.loads(json_str)
+                print(f"[OK] JSON успешно распарсен")
+            except json.JSONDecodeError as e:
+                # Пытаемся найти и исправить распространенные ошибки
+                print(f"[ERROR] Первая попытка парса JSON не удалась: {e}")
+                print(f"[DEBUG] JSON строка: {json_str[:300]}...")
+                
+                # Попытка исправления: экранирование конца строк в кавычках
+                try:
+                    # Замена некорректных переводов строк внутри строк
+                    json_str_fixed = json_str.replace('\n', '\\n')
+                    data = json.loads(json_str_fixed)
+                    print(f"[OK] JSON исправлен после замены \\n")
+                except json.JSONDecodeError:
+                    print(f"[ERROR] JSON parse error после попытки исправления: {e}")
+                    return jsonify({'success': False, 'error': f'Невалидный JSON от GigaChat: {str(e)}'}), 500
+            
+            cards_data = data.get('cards', [])
+            
+            if not cards_data or not isinstance(cards_data, list):
+                print(f"[ERROR] Нет массива 'cards' или это не список: {type(cards_data)}")
+                return jsonify({'success': False, 'error': 'Ответ не содержит массив cards'}), 500
+            
+            # Валидация и сохранение карточек
+            valid_cards = []
+            for idx, card_data in enumerate(cards_data):
+                # Проверяем что это словарь
+                if not isinstance(card_data, dict):
+                    print(f"[WARNING] Карточка {idx} не является словарем")
+                    continue
+                
+                # Проверяем все необходимые поля присутствуют и не пусты
+                required_fields = ['question', 'answer', 'explanation']
+                if not all(field in card_data for field in required_fields):
+                    missing = [f for f in required_fields if f not in card_data]
+                    print(f"[WARNING] Карточка {idx} отсутствуют поля: {missing}")
+                    continue
+                
+                # Проверяем что все значения строки и не пусты
+                if not all(isinstance(card_data.get(field, ''), str) and 
+                          card_data.get(field, '').strip() for field in required_fields):
+                    print(f"[WARNING] Карточка {idx} содержит пустые или некорректные значения")
+                    continue
+                
+                # Очищаем значения от дополнительных пробелов
+                card = GameCard(
+                    session_id=session.id,
+                    question=card_data['question'].strip(),
+                    answer=card_data['answer'].strip(),
+                    explanation=card_data['explanation'].strip(),
+                    order_index=idx
+                )
+                db.session.add(card)
+                valid_cards.append(card)
+            
+            if not valid_cards:
+                print(f"[ERROR] Не удалось создать ни одну валидную карточку из {len(cards_data)} данных")
+                return jsonify({'success': False, 'error': 'Не удалось создать валидные карточки'}), 500
+            
+            db.session.commit()
+            
+            print(f"[OK] Успешно создано {len(valid_cards)} из {len(cards_data)} карточек")
+            return jsonify({'success': True, 'cards_count': len(valid_cards), 'total_received': len(cards_data)})
+        
+    except Exception as e:
+        print(f"[ERROR] ERROR в generate_cards: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# API: Начать игру (распределить карточки)
+@app.route('/api/card-game/session/<int:session_id>/start', methods=['POST'])
+@login_required
+def start_card_game(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Только создатель может начать игру
+    if session.creator_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Только создатель может начать игру'}), 403
+    
+    # Проверяем, что есть карточки
+    cards = GameCard.query.filter_by(session_id=session_id).all()
+    if not cards:
+        return jsonify({'success': False, 'error': 'Сначала сгенерируйте карточки'}), 400
+    
+    # Получаем участников (включая создателя)
+    participants = GameParticipant.query.filter_by(session_id=session_id).all()
+    participant_ids = [p.user_id for p in participants]
+    
+    # Добавляем создателя, если его нет в участниках
+    if current_user.id not in participant_ids:
+        creator_participant = GameParticipant(
+            session_id=session_id,
+            user_id=current_user.id,
+            status='joined'
+        )
+        db.session.add(creator_participant)
+        participants.append(creator_participant)
+        participant_ids.append(current_user.id)
+    
+    if len(participant_ids) < 2:
+        return jsonify({'success': False, 'error': 'Нужно минимум 2 участника для начала игры'}), 400
+    
+    # Рандомно распределяем карточки
+    import random
+    random.shuffle(cards)
+    
+    for idx, card in enumerate(cards):
+        # Назначаем карточку участнику
+        assigned_to = participant_ids[idx % len(participant_ids)]
+        
+        # Назначаем проверяющего (следующий участник по кругу)
+        checker_idx = (participant_ids.index(assigned_to) + 1) % len(participant_ids)
+        checked_by = participant_ids[checker_idx]
+        
+        card.assigned_to_user_id = assigned_to
+        card.checked_by_user_id = checked_by
+    
+    session.status = 'in_progress'
+    session.started_at = datetime.utcnow()
+    
+    db.session.commit()
+    
+    return jsonify({'success': True, 'status': 'in_progress'})
+
+
+# Страница игры (отвечаем на вопросы)
+@app.route('/card-game/session/<int:session_id>/play')
+@login_required
+def play_card_game(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Проверка доступа
+    participant = GameParticipant.query.filter_by(session_id=session_id, user_id=current_user.id).first()
+    is_creator = session.creator_id == current_user.id
+    
+    if not participant and not is_creator:
+        flash('У вас нет доступа к этой игре', 'error')
+        return redirect(url_for('card_game'))
+    
+    if session.status != 'in_progress':
+        flash('Игра еще не началась или уже завершена', 'warning')
+        return redirect(url_for('view_card_game_session', session_id=session_id))
+    
+    # Карточки, назначенные текущему пользователю (на которые он отвечает)
+    my_cards = GameCard.query.filter_by(session_id=session_id, assigned_to_user_id=current_user.id).order_by(GameCard.order_index).all()
+    
+    # Карточки, которые проверяет текущий пользователь
+    checking_cards = GameCard.query.filter_by(session_id=session_id, checked_by_user_id=current_user.id).order_by(GameCard.order_index).all()
+    
+    return render_template('card_game_play.html',
+                         session=session,
+                         my_cards=my_cards,
+                         checking_cards=checking_cards)
+
+
+# API: Отправить ответ на карточку
+@app.route('/api/card-game/card/<int:card_id>/answer', methods=['POST'])
+@login_required
+def submit_card_answer(card_id):
+    card = GameCard.query.get_or_404(card_id)
+    
+    # Проверяем, что карточка назначена текущему пользователю
+    if card.assigned_to_user_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Эта карточка не назначена вам'}), 403
+    
+    data = request.get_json()
+    answer_text = data.get('answer_text', '').strip()
+    
+    if not answer_text:
+        return jsonify({'success': False, 'error': 'Ответ не может быть пустым'}), 400
+    
+    # Проверяем, не отвечал ли уже
+    existing = GameAnswer.query.filter_by(card_id=card_id, user_id=current_user.id).first()
+    if existing:
+        return jsonify({'success': False, 'error': 'Вы уже ответили на эту карточку'}), 400
+    
+    # Создаем ответ
+    answer = GameAnswer(
+        card_id=card_id,
+        user_id=current_user.id,
+        checked_by_user_id=card.checked_by_user_id,
+        answer_text=answer_text
+    )
+    db.session.add(answer)
+    db.session.commit()
+    
+    return jsonify({'success': True, 'answer_id': answer.id})
+
+
+# API: Оценить ответ товарища
+@app.route('/api/card-game/answer/<int:answer_id>/rate', methods=['POST'])
+@login_required
+def rate_card_answer(answer_id):
+    answer = GameAnswer.query.get_or_404(answer_id)
+    
+    # Проверяем, что текущий пользователь проверяет этот ответ
+    if answer.checked_by_user_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Вы не можете проверять этот ответ'}), 403
+    
+    data = request.get_json()
+    rating = data.get('rating')
+    feedback = data.get('feedback', '').strip()
+    is_correct = data.get('is_correct')
+    
+    if rating is None or not (1 <= int(rating) <= 5):
+        return jsonify({'success': False, 'error': 'Рейтинг должен быть от 1 до 5'}), 400
+    
+    # Обновляем ответ
+    answer.rating = int(rating)
+    answer.feedback = feedback
+    answer.is_correct = bool(is_correct)
+    answer.checked_at = datetime.utcnow()
+    
+    # Обновляем баллы участника
+    participant = GameParticipant.query.filter_by(
+        session_id=answer.card.session_id,
+        user_id=answer.user_id
+    ).first()
+    
+    if participant:
+        participant.score += int(rating)
+    
+    db.session.commit()
+    
+    return jsonify({'success': True})
+
+
+# API: Завершить игру
+@app.route('/api/card-game/session/<int:session_id>/complete', methods=['POST'])
+@login_required
+def complete_card_game(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Только создатель может завершить игру
+    if session.creator_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Только создатель может завершить игру'}), 403
+    
+    session.status = 'completed'
+    session.completed_at = datetime.utcnow()
+    
+    # Обновляем статус участников
+    participants = GameParticipant.query.filter_by(session_id=session_id).all()
+    for p in participants:
+        p.status = 'completed'
+    
+    db.session.commit()
+    
+    return jsonify({'success': True, 'status': 'completed'})
+
+
+# API: Удалить игровую сессию
+@app.route('/api/card-game/session/<int:session_id>', methods=['DELETE'])
+@login_required
+def delete_card_game_session(session_id):
+    session = GameSession.query.get_or_404(session_id)
+    
+    # Только создатель может удалить
+    if session.creator_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Только создатель может удалить игру'}), 403
+    
+    db.session.delete(session)
+    db.session.commit()
+    
+    return jsonify({'success': True})
 
 
 if __name__ == '__main__':

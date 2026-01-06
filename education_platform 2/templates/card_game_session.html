@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+
+{% block title %}{{ session.title }} - Игра{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <!-- Заголовок -->
+    <div class="row mb-4">
+        <div class="col-md-8">
+            <h2>{{ session.title }}</h2>
+            <p class="text-muted">
+                <strong>Предмет:</strong> {{ session.subject }} | 
+                <strong>Тема:</strong> {{ session.topic }}
+            </p>
+        </div>
+        <div class="col-md-4 text-end">
+            <span class="badge fs-5 
+                {% if session.status == 'waiting' %}bg-warning text-dark
+                {% elif session.status == 'in_progress' %}bg-success
+                {% else %}bg-secondary{% endif %}">
+                {% if session.status == 'waiting' %}Ожидание
+                {% elif session.status == 'in_progress' %}В игре
+                {% else %}Завершена{% endif %}
+            </span>
+        </div>
+    </div>
+
+    <!-- Информация о создателе -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5><i class="fas fa-user"></i> Создатель: {{ session.creator.nickname or session.creator.username }}</h5>
+            <p class="mb-0"><i class="far fa-clock"></i> Создано: {{ session.created_at.strftime('%d.%m.%Y %H:%M') }}</p>
+        </div>
+    </div>
+
+    <!-- Участники -->
+    <div class="card mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0"><i class="fas fa-users"></i> Участники ({{ participants|length }})</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                {% for participant in participants %}
+                <div class="col-md-4 mb-3">
+                    <div class="card">
+                        <div class="card-body">
+                            <h6>{{ participant.user.nickname or participant.user.username }}</h6>
+                            <p class="mb-1">
+                                <span class="badge 
+                                    {% if participant.status == 'invited' %}bg-warning text-dark
+                                    {% elif participant.status == 'joined' %}bg-info
+                                    {% elif participant.status == 'ready' %}bg-success
+                                    {% else %}bg-secondary{% endif %}">
+                                    {{ participant.status }}
+                                </span>
+                            </p>
+                            {% if session.status == 'completed' %}
+                            <p class="mb-0"><strong>Баллов:</strong> {{ participant.score }}</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            {% if is_creator and session.status == 'waiting' %}
+            <hr>
+            <h6>Пригласить участника:</h6>
+            <div class="input-group">
+                <input type="text" id="searchUser" class="form-control" placeholder="Найти пользователя по нику...">
+                <button class="btn btn-primary" onclick="searchUsers()">
+                    <i class="fas fa-search"></i> Найти
+                </button>
+            </div>
+            <div id="searchResults" class="mt-3"></div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Карточки -->
+    <div class="card mb-4">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="fas fa-layer-group"></i> Карточки ({{ cards|length }}/{{ session.num_cards }})</h5>
+            {% if is_creator and session.status == 'waiting' and not cards %}
+            <button class="btn btn-light btn-sm" onclick="generateCards()">
+                <i class="fas fa-magic"></i> Сгенерировать карточки
+            </button>
+            {% endif %}
+        </div>
+        <div class="card-body">
+            {% if cards %}
+                <div class="accordion" id="cardsAccordion">
+                    {% for card in cards %}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="heading{{ card.id }}">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse{{ card.id }}">
+                                <strong>Карточка {{ loop.index }}:</strong> 
+                                {% if card.assigned_to_user_id %}
+                                    <span class="ms-2 badge bg-info">
+                                        Отвечает: {{ card.assigned_to.nickname or card.assigned_to.username }}
+                                    </span>
+                                    <span class="ms-2 badge bg-warning text-dark">
+                                        Проверяет: {{ card.checked_by.nickname or card.checked_by.username }}
+                                    </span>
+                                {% endif %}
+                            </button>
+                        </h2>
+                        <div id="collapse{{ card.id }}" class="accordion-collapse collapse" data-bs-parent="#cardsAccordion">
+                            <div class="accordion-body">
+                                <p><strong>Вопрос:</strong> {{ card.question }}</p>
+                                <p><strong>Ответ:</strong> {{ card.answer }}</p>
+                                <p class="text-muted"><strong>Объяснение:</strong> {{ card.explanation }}</p>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class="text-muted text-center py-4">Карточки еще не сгенерированы</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Действия -->
+    <div class="card mb-4">
+        <div class="card-body">
+            {% if not current_participant and not is_creator and session.status == 'waiting' %}
+                <button class="btn btn-success btn-lg" onclick="joinGame()">
+                    <i class="fas fa-user-plus"></i> Присоединиться к игре
+                </button>
+            {% endif %}
+
+            {% if is_creator and session.status == 'waiting' and cards|length > 0 and participants|length >= 1 %}
+                <button class="btn btn-primary btn-lg" onclick="startGame()">
+                    <i class="fas fa-play"></i> Начать игру
+                </button>
+            {% endif %}
+
+            {% if session.status == 'in_progress' %}
+                <a href="{{ url_for('play_card_game', session_id=session.id) }}" class="btn btn-success btn-lg">
+                    <i class="fas fa-gamepad"></i> Играть
+                </a>
+            {% endif %}
+
+            {% if is_creator and session.status == 'in_progress' %}
+                <button class="btn btn-warning btn-lg" onclick="completeGame()">
+                    <i class="fas fa-flag-checkered"></i> Завершить игру
+                </button>
+            {% endif %}
+
+            <a href="{{ url_for('card_game') }}" class="btn btn-secondary btn-lg">
+                <i class="fas fa-arrow-left"></i> Назад
+            </a>
+        </div>
+    </div>
+</div>
+
+<script>
+const sessionId = {{ session.id }};
+
+function searchUsers() {
+    const query = document.getElementById('searchUser').value;
+    if (query.length < 2) {
+        alert('Введите минимум 2 символа');
+        return;
+    }
+    
+    fetch(`/api/messenger/search-users?q=${encodeURIComponent(query)}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                displaySearchResults(data.users);
+            }
+        });
+}
+
+function displaySearchResults(users) {
+    const container = document.getElementById('searchResults');
+    if (users.length === 0) {
+        container.innerHTML = '<p class="text-muted">Пользователи не найдены</p>';
+        return;
+    }
+    
+    let html = '<div class="list-group">';
+    users.forEach(user => {
+        html += `
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <span>${user.nickname || user.username}</span>
+                <button class="btn btn-sm btn-primary" onclick="inviteUser(${user.id}, '${user.nickname || user.username}')">
+                    <i class="fas fa-envelope"></i> Пригласить
+                </button>
+            </div>
+        `;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function inviteUser(userId, username) {
+    fetch(`/api/card-game/session/${sessionId}/invite`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({user_id: userId})
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert(`Приглашение отправлено пользователю ${username}`);
+            location.reload();
+        } else {
+            alert('Ошибка: ' + data.error);
+        }
+    });
+}
+
+function generateCards() {
+    if (!confirm('Сгенерировать карточки через ИИ?')) return;
+    
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Генерация...';
+    
+    fetch(`/api/card-game/session/${sessionId}/generate-cards`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert(`Создано ${data.cards_count} карточек!`);
+            location.reload();
+        } else {
+            alert('Ошибка: ' + data.error);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-magic"></i> Сгенерировать карточки';
+        }
+    });
+}
+
+function startGame() {
+    if (!confirm('Начать игру? Карточки будут распределены между участниками.')) return;
+    
+    fetch(`/api/card-game/session/${sessionId}/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert('Игра началась! Переходите к игре.');
+            location.reload();
+        } else {
+            alert('Ошибка: ' + data.error);
+        }
+    });
+}
+
+function joinGame() {
+    fetch(`/api/card-game/session/${sessionId}/join`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert('Вы присоединились к игре!');
+            location.reload();
+        } else {
+            alert('Ошибка: ' + data.error);
+        }
+    });
+}
+
+function completeGame() {
+    if (!confirm('Завершить игру и подвести итоги?')) return;
+    
+    fetch(`/api/card-game/session/${sessionId}/complete`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert('Игра завершена!');
+            location.reload();
+        } else {
+            alert('Ошибка: ' + data.error);
+        }
+    });
+}
+</script>
+{% endblock %}

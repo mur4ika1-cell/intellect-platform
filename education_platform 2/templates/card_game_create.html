@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}Создать игру{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0"><i class="fas fa-plus"></i> Создать новую игру</h4>
+                </div>
+                <div class="card-body">
+                    <form id="createGameForm">
+                        <div class="mb-3">
+                            <label for="title" class="form-label">Название игры *</label>
+                            <input type="text" class="form-control" id="title" required
+                                   placeholder="Например: Изучаем историю России">
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="subject" class="form-label">Предмет *</label>
+                            <select class="form-select" id="subject" required>
+                                <option value="">Выберите предмет</option>
+                                <option value="Математика">Математика</option>
+                                <option value="Физика">Физика</option>
+                                <option value="Химия">Химия</option>
+                                <option value="Биология">Биология</option>
+                                <option value="История">История</option>
+                                <option value="Литература">Литература</option>
+                                <option value="География">География</option>
+                                <option value="Информатика">Информатика</option>
+                                <option value="Английский язык">Английский язык</option>
+                                <option value="Обществознание">Обществознание</option>
+                                <option value="Другое">Другое</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="topic" class="form-label">Тема *</label>
+                            <input type="text" class="form-control" id="topic" required
+                                   placeholder="Например: Великая Отечественная война">
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="numCards" class="form-label">Количество карточек</label>
+                            <input type="number" class="form-control" id="numCards" 
+                                   value="10" min="5" max="30">
+                            <small class="text-muted">От 5 до 30 карточек</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="materialText" class="form-label">
+                                Учебный материал (необязательно)
+                            </label>
+                            <textarea class="form-control" id="materialText" rows="6"
+                                      placeholder="Вставьте текст учебного материала, по которому будут созданы вопросы..."></textarea>
+                            <small class="text-muted">
+                                Если материал не указан, вопросы будут сгенерированы по теме
+                            </small>
+                        </div>
+
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle"></i> 
+                            <strong>Как это работает:</strong>
+                            <ol class="mb-0 mt-2">
+                                <li>Заполните информацию о теме</li>
+                                <li>После создания пригласите друзей</li>
+                                <li>ИИ сгенерирует карточки с вопросами</li>
+                                <li>Начните игру и проверяйте друг друга!</li>
+                            </ol>
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary btn-lg">
+                                <i class="fas fa-check"></i> Создать игру
+                            </button>
+                            <a href="{{ url_for('card_game') }}" class="btn btn-secondary btn-lg">
+                                <i class="fas fa-times"></i> Отмена
+                            </a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('createGameForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const data = {
+        title: document.getElementById('title').value.trim(),
+        subject: document.getElementById('subject').value,
+        topic: document.getElementById('topic').value.trim(),
+        num_cards: parseInt(document.getElementById('numCards').value),
+        material_text: document.getElementById('materialText').value.trim()
+    };
+    
+    if (!data.title || !data.subject || !data.topic) {
+        alert('Заполните все обязательные поля!');
+        return;
+    }
+    
+    const btn = this.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Создание...';
+    
+    fetch('/card-game/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            alert('Игра создана! Теперь пригласите участников.');
+            window.location.href = `/card-game/session/${data.session_id}`;
+        } else {
+            alert('Ошибка: ' + data.error);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-check"></i> Создать игру';
+        }
+    })
+    .catch(err => {
+        alert('Ошибка: ' + err);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-check"></i> Создать игру';
+    });
+});
+</script>
+{% endblock %}

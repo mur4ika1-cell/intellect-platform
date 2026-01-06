@@ -87,15 +87,7 @@
     margin-bottom: 1rem;
 }
 
-/* Стили для фитнес игр */
-.game-card {
-    height: 100%;
-    background: linear-gradient(to bottom right, #ffffff, #f8f9fa);
-}
 
-.game-card .badge {
-    font-size: 0.8rem;
-}
 
 /* Адаптивность */
 @media (max-width: 768px) {

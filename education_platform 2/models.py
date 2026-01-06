@@ -36,6 +36,8 @@ class User(UserMixin, db.Model):
     nutrition_diaries = db.relationship('NutritionDiary', backref='user', lazy=True)
     sent_messages = db.relationship('Message', foreign_keys='Message.sender_id', backref='sender', lazy=True)
     received_messages = db.relationship('Message', foreign_keys='Message.receiver_id', backref='receiver', lazy=True)
+    # Новые связи для игры в карточки
+    created_game_sessions = db.relationship('GameSession', foreign_keys='GameSession.creator_id', backref='creator', lazy=True)
 
 class TestResult(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -116,14 +118,6 @@ class Recipe(db.Model):
     image_url = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-class FitnessGame(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    game_type = db.Column(db.String(50), nullable=False)
-    score = db.Column(db.Integer, default=0)
-    accuracy = db.Column(db.Float, default=0)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -131,3 +125,75 @@ class Message(db.Model):
     content = db.Column(db.Text, nullable=False)
     is_read = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+# ============================================
+# МОДЕЛИ ДЛЯ ИГРЫ В КАРТОЧКИ
+# ============================================
+
+class GameSession(db.Model):
+    """Игровая сессия с карточками"""
+    id = db.Column(db.Integer, primary_key=True)
+    creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    subject = db.Column(db.String(100), nullable=False)
+    topic = db.Column(db.String(200), nullable=False)
+    material_text = db.Column(db.Text)  # Загруженный материал
+    num_cards = db.Column(db.Integer, default=10)  # Количество карточек
+    status = db.Column(db.String(20), default='waiting')  # waiting, in_progress, completed
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    started_at = db.Column(db.DateTime)
+    completed_at = db.Column(db.DateTime)
+    
+    # Связи
+    participants = db.relationship('GameParticipant', backref='session', lazy=True, cascade='all, delete-orphan')
+    cards = db.relationship('GameCard', backref='session', lazy=True, cascade='all, delete-orphan')
+
+
+class GameCard(db.Model):
+    """Карточка с вопросом и ответом"""
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('game_session.id'), nullable=False)
+    question = db.Column(db.Text, nullable=False)
+    answer = db.Column(db.Text, nullable=False)
+    explanation = db.Column(db.Text)  # Подробное объяснение
+    assigned_to_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # Кому достался вопрос
+    checked_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # Кто проверяет
+    order_index = db.Column(db.Integer)  # Порядковый номер карточки
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Связи
+    assigned_to = db.relationship('User', foreign_keys=[assigned_to_user_id], backref='assigned_cards')
+    checked_by = db.relationship('User', foreign_keys=[checked_by_user_id], backref='checking_cards')
+    answers = db.relationship('GameAnswer', backref='card', lazy=True, cascade='all, delete-orphan')
+
+
+class GameParticipant(db.Model):
+    """Участник игровой сессии"""
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('game_session.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    status = db.Column(db.String(20), default='invited')  # invited, joined, ready, completed
+    score = db.Column(db.Integer, default=0)  # Итоговый балл
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Связь без backref (дается явно в User если нужен)
+    user = db.relationship('User', foreign_keys=[user_id])
+
+
+class GameAnswer(db.Model):
+    """Ответ участника на карточку"""
+    id = db.Column(db.Integer, primary_key=True)
+    card_id = db.Column(db.Integer, db.ForeignKey('game_card.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)  # Кто отвечал
+    checked_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # Кто проверял
+    answer_text = db.Column(db.Text, nullable=False)  # Ответ участника
+    rating = db.Column(db.Integer)  # Оценка от 1 до 5
+    feedback = db.Column(db.Text)  # Комментарий проверяющего
+    is_correct = db.Column(db.Boolean)  # Правильно/неправильно
+    answered_at = db.Column(db.DateTime, default=datetime.utcnow)
+    checked_at = db.Column(db.DateTime)
+    
+    # Связи без conflicting backrefs
+    user = db.relationship('User', foreign_keys=[user_id])
+    checked_by = db.relationship('User', foreign_keys=[checked_by_user_id], backref='checked_answers')
