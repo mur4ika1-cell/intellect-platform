@@ -2,6 +2,12 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_bcrypt import Bcrypt
 from sqlalchemy import or_
+from datetime import datetime
+from models import db, User, TestResult, PhysicalEducationResult, Schedule, Homework, LearningMaterial, TrainingProgram, NutritionDiary, Recipe, Message, MessageReaction, AdminNotification, ActivityLog
+from config import Config
+import json
+import os
+import re
 
 # GigaChat - улучшенная проверка импорта
 GIGACHAT_AVAILABLE = False
@@ -17,11 +23,7 @@ except Exception as e:
     print(f"[WARNING] Ошибка импорта GigaChat: {e}")
     GigaChat = None
 
-from datetime import datetime
-from models import db, User, TestResult, PhysicalEducationResult, Schedule, Homework, LearningMaterial, TrainingProgram, NutritionDiary, Recipe, Message, GameSession, GameCard, GameParticipant, GameAnswer
-from config import Config
-import json
-import os
+
 
 
 # Загрузка тем из JSON
@@ -36,6 +38,100 @@ def load_subjects_topics():
     except json.JSONDecodeError:
         print(f"[WARNING] Ошибка парсинга JSON в {json_path}")
         return {}
+
+
+# Вспомогательная функция для надежного парсинга JSON из ответа нейросети
+def parse_json_safely(content, location_name=""):
+    """
+    Извлекает и парсит JSON из текста, обрезая лишние данные.
+    
+    Args:
+        content: текст, из которого нужно извлечь JSON
+        location_name: название места (для логирования)
+    
+    Returns:
+        parsed_json: распарсенный JSON объект
+        
+    Raises:
+        json.JSONDecodeError: если JSON не валиден
+    """
+    original_content = content
+    
+    # 1. Очистка от markdown
+    content = content.replace('```json', '').replace('```', '').replace('````', '').strip()
+    
+    # 2. Найти первую открывающую скобку
+    json_start = content.find('{')
+    if json_start == -1:
+        raise json.JSONDecodeError("JSON не найден (нет '{' в ответе)", content, 0)
+    
+    # 3. Найти последнюю закрывающую скобку
+    json_end = content.rfind('}') + 1
+    if json_end <= json_start:
+        raise json.JSONDecodeError("JSON не закрыт (нет '}')", content, len(content))
+    
+    # 4. Извлечь потенциальный JSON
+    potential_json = content[json_start:json_end]
+    
+    # 5. Пытаемся разные стратегии парсинга
+    
+    # Стратегия A: Прямой парсинг
+    try:
+        result = json.loads(potential_json)
+        return result
+    except json.JSONDecodeError as e:
+        print(f"[DEBUG] Прямой парсинг не прошел: {str(e)[:80]}")
+    
+    # Стратегия B: Обрезать конец (лишние символы после })
+    for i in range(len(potential_json) - 1, -1, -1):
+        if potential_json[i] == '}':
+            candidate = potential_json[:i+1]
+            try:
+                result = json.loads(candidate)
+                print(f"[INFO] JSON очищен от лишних {len(potential_json) - (i+1)} символов в конце")
+                return result
+            except json.JSONDecodeError:
+                continue
+    
+    # Стратегия C: Убрать управляющие символы и попробовать снова
+    cleaned = potential_json.replace('\x00', '').replace('\r', '').replace('\n', ' ')
+    try:
+        result = json.loads(cleaned)
+        print(f"[INFO] JSON успешно спарсен после очистки управляющих символов")
+        return result
+    except json.JSONDecodeError as e:
+        print(f"[DEBUG] После очистки управляющих: {str(e)[:80]}")
+    
+    # Стратегия D: Попытка найти правильные границы JSON
+    # Этот подход подсчитывает открывающие и закрывающие скобки
+    brace_count = 0
+    for i in range(json_start, len(content)):
+        if content[i] == '{':
+            brace_count += 1
+        elif content[i] == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                candidate = content[json_start:i+1]
+                try:
+                    result = json.loads(candidate)
+                    print(f"[INFO] JSON найден по подсчету скобок")
+                    return result
+                except json.JSONDecodeError:
+                    pass
+                break
+    
+    # 6. Если ничего не помогло, выдать информативную ошибку
+    print(f"[ERROR] Не удалось парсить JSON{' (' + location_name + ')' if location_name else ''}")
+    print(f"[DEBUG] Исходный ответ (первые 300 символов): {original_content[:300]}")
+    print(f"[DEBUG] Потенциальный JSON (первые 300 символов): {potential_json[:300]}")
+    print(f"[DEBUG] Потенциальный JSON (последние 300 символов): {potential_json[-300:]}")
+    print(f"[DEBUG] Длина потенциального JSON: {len(potential_json)}")
+    
+    raise json.JSONDecodeError(
+        f"JSON невозможно парсить ({location_name}). Попробовали 4 стратегии парсинга.",
+        potential_json[:100],
+        0
+    )
 
 
 SUBJECTS_TOPICS = load_subjects_topics()
@@ -139,6 +235,46 @@ with app.app_context():
     # Создаем все таблицы (если их еще нет)
     db.create_all()
     
+    # Миграция для таблицы message - добавляем колонки message_type и file_path
+    try:
+        inspector = inspect(db.engine)
+        message_columns = [col['name'] for col in inspector.get_columns('message')]
+        
+        # Добавляем колонку message_type если её нет
+        if 'message_type' not in message_columns:
+            print("[INFO] Добавление колонки message_type в таблицу message...")
+            try:
+                with db.engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE message ADD COLUMN message_type VARCHAR(20) DEFAULT 'text'"))
+                    conn.commit()
+                print("[OK] Колонка message_type добавлена")
+            except Exception as e:
+                print(f"[WARNING] Ошибка при добавлении message_type: {e}")
+                db.session.rollback()
+        
+        # Добавляем колонку file_path если её нет
+        if 'file_path' not in message_columns:
+            print("[INFO] Добавление колонки file_path в таблицу message...")
+            try:
+                with db.engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE message ADD COLUMN file_path VARCHAR(500)"))
+                    conn.commit()
+                print("[OK] Колонка file_path добавлена")
+            except Exception as e:
+                print(f"[WARNING] Ошибка при добавлении file_path: {e}")
+                db.session.rollback()
+        
+        # Обновляем существующие сообщения (устанавливаем message_type = 'text' если null)
+        try:
+            db.session.execute(text("UPDATE message SET message_type = 'text' WHERE message_type IS NULL"))
+            db.session.commit()
+            print("[OK] Миграция message завершена")
+        except Exception as e:
+            print(f"[WARNING] Ошибка при обновлении message_type: {e}")
+            db.session.rollback()
+    except Exception as e:
+        print(f"[WARNING] Таблица message еще не существует - будет создана при инициализации: {e}")
+    
     # Проверка настроек GigaChat при запуске
     if GIGACHAT_AVAILABLE:
         creds = app.config.get('GIGACHAT_CREDENTIALS')
@@ -147,6 +283,71 @@ with app.app_context():
         else:
             print("[WARNING] GIGACHAT_CREDENTIALS не найдены в config.py!")
             print("Добавьте в config.py: GIGACHAT_CREDENTIALS = 'ваш_ключ'")
+
+    # Миграция: новые колонки для User (is_approved, is_banned)
+    try:
+        inspector = inspect(db.engine)
+        user_columns = [col['name'] for col in inspector.get_columns('user')]
+
+        if 'is_approved' not in user_columns:
+            print("[INFO] Добавление колонки is_approved в таблицу user...")
+            with db.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE user ADD COLUMN is_approved BOOLEAN DEFAULT 1"))
+                conn.commit()
+
+        if 'is_banned' not in user_columns:
+            print("[INFO] Добавление колонки is_banned в таблицу user...")
+            with db.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE user ADD COLUMN is_banned BOOLEAN DEFAULT 0"))
+                conn.commit()
+    except Exception as e:
+        print(f"[WARNING] Миграция user (is_approved/is_banned): {e}")
+
+    # Миграция: новые колонки для Recipe (user_id, status)
+    try:
+        inspector = inspect(db.engine)
+        recipe_columns = [col['name'] for col in inspector.get_columns('recipe')]
+
+        if 'user_id' not in recipe_columns:
+            print("[INFO] Добавление колонки user_id в таблицу recipe...")
+            with db.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE recipe ADD COLUMN user_id INTEGER"))
+                conn.commit()
+
+        if 'status' not in recipe_columns:
+            print("[INFO] Добавление колонки status в таблицу recipe...")
+            with db.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE recipe ADD COLUMN status VARCHAR(20) DEFAULT 'approved'"))
+                conn.commit()
+    except Exception as e:
+        print(f"[WARNING] Миграция recipe (user_id/status): {e}")
+
+    # Создаём таблицы AdminNotification и ActivityLog
+    db.create_all()
+
+    # Создание аккаунта администратора
+    admin_email = 'mur4ika1@gmail.com'
+    admin = User.query.filter_by(email=admin_email).first()
+    if not admin:
+        print("[INFO] Создание аккаунта администратора...")
+        admin_password = bcrypt.generate_password_hash('59655965').decode('utf-8')
+        admin = User(
+            username='Admin',
+            nickname='admin',
+            email=admin_email,
+            password=admin_password,
+            role='admin',
+            is_approved=True,
+            is_banned=False
+        )
+        db.session.add(admin)
+        db.session.commit()
+        print("[OK] Аккаунт администратора создан")
+    elif admin.role != 'admin':
+        admin.role = 'admin'
+        admin.is_approved = True
+        db.session.commit()
+        print("[OK] Существующий пользователь обновлён до администратора")
 
 
 @app.route('/api/subjects-topics')
@@ -159,40 +360,84 @@ def get_subjects_topics():
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
-    
+
     if request.method == 'POST':
         username = request.form.get('username')
         nickname = request.form.get('nickname', '').strip()
         email = request.form.get('email')
         password = request.form.get('password')
-        
+        role = request.form.get('role', 'student')
+
+        # Проверяем username на уникальность
+        if User.query.filter_by(username=username).first():
+            flash('Это имя пользователя уже занято', 'error')
+            return redirect(url_for('register'))
+
         if User.query.filter_by(email=email).first():
             flash('Email уже используется', 'error')
             return redirect(url_for('register'))
-        
+
         # Если никнейм не указан, используем username
         if not nickname or nickname.strip() == '':
             nickname = username
-        
+
         # Проверяем уникальность никнейма
         existing_user = User.query.filter_by(nickname=nickname).first()
         if existing_user:
             flash('Никнейм уже занят. Выберите другой.', 'error')
             return redirect(url_for('register'))
-        
-        # Получаем роль
-        role = request.form.get('role', 'student')
-        if role not in ['teacher', 'student']:
+
+        # Валидируем роль
+        if role not in ['teacher', 'student', 'cook']:
             role = 'student'
-        
+
+        # Учителя и повара требуют одобрения админа
+        needs_approval = role in ['teacher', 'cook']
+
         hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-        user = User(username=username, nickname=nickname, email=email, password=hashed_password, role=role)
+        user = User(
+            username=username,
+            nickname=nickname,
+            email=email,
+            password=hashed_password,
+            role=role,
+            is_approved=not needs_approval
+        )
         db.session.add(user)
         db.session.commit()
-        
-        flash('Регистрация успешна', 'success')
+
+        # Создаём уведомление для админа если нужно одобрение
+        if needs_approval:
+            role_name = 'Учитель' if role == 'teacher' else 'Повар'
+            notification = AdminNotification(
+                type='registration',
+                message=f'Новая заявка на регистрацию: {username} ({role_name})',
+                related_user_id=user.id
+            )
+            db.session.add(notification)
+
+            # Лог активности
+            log = ActivityLog(
+                user_id=user.id,
+                action='registration_pending',
+                details=f'Пользователь {username} зарегистрировался как {role_name} и ожидает одобрения'
+            )
+            db.session.add(log)
+            db.session.commit()
+
+            flash(f'Регистрация отправлена на одобрение администратору. Вы сможете войти после подтверждения.', 'info')
+        else:
+            log = ActivityLog(
+                user_id=user.id,
+                action='registration',
+                details=f'Пользователь {username} зарегистрировался как ученик'
+            )
+            db.session.add(log)
+            db.session.commit()
+            flash('Регистрация успешна', 'success')
+
         return redirect(url_for('login'))
-    
+
     return render_template('register.html')
 
 
@@ -201,18 +446,24 @@ def register():
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
-    
+
     if request.method == 'POST':
         email = request.form.get('email')
         password = request.form.get('password')
         user = User.query.filter_by(email=email).first()
-        
+
         if user and bcrypt.check_password_hash(user.password, password):
+            if user.is_banned:
+                flash('Ваш аккаунт заблокирован. Обратитесь к администратору.', 'error')
+                return redirect(url_for('login'))
+            if not user.is_approved:
+                flash('Ваш аккаунт ещё не одобрен администратором. Пожалуйста, подождите.', 'warning')
+                return redirect(url_for('login'))
             login_user(user)
             return redirect(url_for('dashboard'))
         else:
             flash('Неверный email или пароль', 'error')
-    
+
     return render_template('login.html')
 
 
@@ -237,7 +488,11 @@ def dashboard():
 @app.route('/profile')
 @login_required
 def profile():
-    if current_user.is_teacher():
+    if current_user.is_admin():
+        return redirect(url_for('admin_panel'))
+    elif current_user.is_cook():
+        return redirect(url_for('cook_profile'))
+    elif current_user.is_teacher():
         return redirect(url_for('teacher_profile'))
     else:
         return redirect(url_for('student_profile'))
@@ -249,6 +504,10 @@ def profile():
 def student_profile():
     if current_user.is_teacher():
         return redirect(url_for('teacher_profile'))
+    if current_user.is_cook():
+        return redirect(url_for('cook_profile'))
+    if current_user.is_admin():
+        return redirect(url_for('admin_panel'))
     
     # Статистика тестов
     tests = TestResult.query.filter_by(user_id=current_user.id).all()
@@ -545,70 +804,98 @@ def api_generate_test():
         ) as giga:
             
             if custom_text:
-                prompt = f"""Ты - эксперт по созданию тестов. Создай тест из {num_questions} вопросов по тексту:
+                prompt = f"""Создай JSON тест с {num_questions} вопросами по тексту.
 
+⚠️ АБСОЛЮТНО СТРОГИЕ ТРЕБОВАНИЯ:
+✓ ТОЛЬКО ВАЛИДНЫЙ JSON - начни с {{ и закончи с }}
+✓ Без markdown, без кода, без объяснений ДО И ПОСЛЕ JSON
+✓ "correct" - число: 0, 1, 2 или 3 ТОЛЬКО
+✓ "options" - массив РОВНО 4 строк
+✓ Поля: "question", "options", "correct", "explanation"
+
+📋 ФОРМАТ (КОПИРУЙ ТОЧНО, ДАЖЕ ПРОБЕЛЫ):
+{{"questions":[{{"question":"Q1","options":["A","B","C","D"],"correct":0,"explanation":"E1"}},{{"question":"Q2","options":["A","B","C","D"],"correct":1,"explanation":"E2"}}]}}
+
+ТЕКСТ ДЛЯ ТЕСТА:
 {custom_text}
 
-ВАЖНО:
-- correct - это ИНДЕКС от 0 до 3
-- 0 = первый вариант, 1 = второй, 2 = третий, 3 = четвертый
+ВЫПОЛНИ:
+1. Прочитай текст выше
+2. Создай {num_questions} вопросов к нему
+3. Каждый вопрос в JSON формате
+4. Верни ТОЛЬКО JSON без пробелов в начале и конце
+5. НИКАКИХ объяснений, комментариев, кода
 
-ПРИМЕР ПРАВИЛЬНОГО JSON:
-{{
-  "questions": [
-    {{
-      "question": "Какая планета ближайшая к Солнцу?",
-      "options": ["Меркурий", "Венера", "Земля", "Марс"],
-      "correct": 0,
-      "explanation": "Правильный ответ - Меркурий (первый вариант). Меркурий находится ближе всего к Солнцу."
-    }}
-  ]
-}}
-
-Верни ТОЛЬКО JSON без пояснений:"""
+ГОТОВ? НАЧНИ С {{ :"""
             else:
-                prompt = f"""Создай тест: предмет "{subject}", тема "{topic}", {num_questions} вопросов.
+                prompt = f"""Создай ТОЛЬКО JSON тест ({num_questions} вопросов).
 
-СТРОГИЙ ФОРМАТ:
-- correct = индекс 0-3 (0-первый, 1-второй, 2-третий, 3-четвертый)
+ПРЕДМЕТ: {subject}
+ТЕМА: {topic}
 
-ПРИМЕР:
-{{
-  "questions": [
-    {{
-      "question": "Сколько будет 2+2?",
-      "options": ["3", "4", "5", "6"],
-      "correct": 1,
-      "explanation": "Правильный ответ - 4 (второй вариант). Это базовая операция сложения: 2+2=4."
-    }}
-  ]
-}}
+⚠️ КРИТИЧЕСКИЕ ТРЕБОВАНИЯ:
+1. ТОЛЬКО JSON - ничего больше, никаких слов
+2. "correct" значение: только 0, 1, 2 или 3
+3. "options" содержит ровно 4 элемента
+4. Каждая question, каждый option, каждое explanation - строка
 
-Верни ТОЛЬКО JSON:"""
+JSON ШАБЛОН (ИСПОЛЬЗУЙ):
+{{"questions":[{{"question":"Вопрос 1?","options":["Опция1","Опция2","Опция3","Опция4"],"correct":0,"explanation":"Объяснение"}}]}}
+
+ГЕНЕРИРУЙ {num_questions} ТАКИХ ВОПРОСОВ.
+НАЧНИ СРАЗУ С {{, БЕЗ СЛОВ:"""
 
             response = giga.chat(prompt)
             content = response.choices[0].message.content.strip()
             
             print("=" * 80)
-            print("GIGACHAT ОТВЕТ:")
-            print(content[:800])
+            print("GIGACHAT ОТВЕТ (первые 500 символов):")
+            print(content[:500])
             print("=" * 80)
             
-            content = content.replace('``````', '').strip()
-            
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            
-            if json_start == -1 or json_end <= json_start:
-                return jsonify({'success': False, 'error': 'Нет JSON в ответе'}), 500
-            
-            json_str = content[json_start:json_end]
-            
             try:
-                test_data = json.loads(json_str)
+                test_data = parse_json_safely(content, "generate-test")
             except json.JSONDecodeError as je:
-                print(f"[ERROR] JSON error: {je}")
-                return jsonify({'success': False, 'error': 'Невалидный JSON'}), 500
+                print(f"[ERROR] JSON парсинг ошибка (тесты): {je}")
+                print(f"[ERROR] Ответ от GigaChat: {content[:1000]}")
+                # Пытаемся создать fallback тест
+                try:
+                    # Извлекаем вопросы, если это возможно
+                    # Пытаемся найти JSON части вручную
+                    if '"questions"' in content or '\"questions\"' in content:
+                        # Есть структура, попробуем спасти вопросы
+                        questions = []
+                        # Ищем pattern "question": "...", "options": ...
+                        pattern = r'"question"\s*:\s*"([^"]*)".*?"options"\s*:\s*\[(.*?)\].*?"correct"\s*:\s*(\d+).*?"explanation"\s*:\s*"([^"]*)"'
+                        matches = re.finditer(pattern, content, re.DOTALL)
+                        for match in matches:
+                            try:
+                                q_text = match.group(1)
+                                options_str = match.group(2)
+                                correct = int(match.group(3))
+                                explanation = match.group(4)
+                                # Извлекаем опции
+                                options = re.findall(r'"([^"]*)"', options_str)[:4]
+                                if len(options) == 4 and 0 <= correct <= 3:
+                                    questions.append({
+                                        'question': q_text,
+                                        'options': options,
+                                        'correct': correct,
+                                        'explanation': explanation
+                                    })
+                            except:
+                                pass
+                        
+                        if len(questions) >= 3:
+                            test_data = {'questions': questions[:num_questions]}
+                            print(f"[OK] Спасли {len(questions)} вопросов из ответа GigaChat")
+                        else:
+                            return jsonify({'success': False, 'error': 'Невозможно спасти данные из ответа GigaChat'}), 500
+                    else:
+                        return jsonify({'success': False, 'error': 'GigaChat вернул невалидный JSON'}), 500
+                except Exception as e:
+                    print(f"[ERROR] Ошибка при спасении данных: {e}")
+                    return jsonify({'success': False, 'error': 'Невалидный JSON от GigaChat'}), 500
             
             if 'questions' not in test_data or not test_data['questions']:
                 return jsonify({'success': False, 'error': 'Нет вопросов'}), 500
@@ -905,6 +1192,7 @@ def api_generate_training_program():
     goal = data.get('goal', '')
     duration = data.get('duration', '1 месяц')
     level = data.get('level', 'начальный')
+    preferences = data.get('preferences', '')  # Дополнительные пожелания
 
     # Fallback если GigaChat недоступен
     if not GIGACHAT_AVAILABLE or GigaChat is None:
@@ -922,20 +1210,67 @@ def api_generate_training_program():
 
     try:
         with GigaChat(credentials=credentials, verify_ssl_certs=False, scope='GIGACHAT_API_PERS', temperature=0.4) as giga:
-            prompt = f"""Ты — тренер. Сгенерируй тренировочную программу с заголовком, длительностью и расписанием на дни недели. Цель: {goal}. Уровень: {level}. Длительность: {duration}. Верни только JSON в формате:\n{{"title": "...", "duration": "...", "schedule": {{"Понедельник": ["упр - 3×10"], ...}}}}"""
+            # Строим промт с учетом пожеланий
+            preferences_text = ""
+            if preferences:
+                preferences_text = f"""
+ДОПОЛНИТЕЛЬНЫЕ ПОЖЕЛАНИЯ ПОЛЬЗОВАТЕЛЯ:
+{preferences}
+
+Обязательно учитай эти пожелания при создании программы!"""
+
+            prompt = f"""Создай СТРОГО JSON тренировочную программу.
+
+ПАРАМЕТРЫ:
+- Цель: {goal}
+- Уровень подготовки: {level}
+- Длительность: {duration}{preferences_text}
+
+⚠️ КРИТИЧЕСКИЕ ТРЕБОВАНИЯ:
+1. ТОЛЬКО JSON, БЕЗ текста до/после
+2. schedule содержит ВСЕ 7 дней недели (Понедельник-Воскресенье)
+3. Каждый день (value) - массив упражнений: ["упр - 3×10", "упр2 - 2×12"]
+4. title - информативное название программы
+5. Программа соответствует УРОВНЮ и ЦЕЛИ
+
+ОБЯЗАТЕЛЬНЫЙ ФОРМАТ JSON:
+{{"title":"Название программы","duration":"{duration}","schedule":{{"Понедельник":["упр1 - 3×10"],"Вторник":["упр2 - 2×12"],"Среда":["упр1 - 3×12"],"Четверг":["упр3 - 3×10"],"Пятница":["упр2 - 3×10"],"Суббота":["упр4 - 2×15"],"Воскресенье":["отдых или растяжка"]}}}}
+
+НАЧНИ С {{ БЕЗ ОБЪЯСНЕНИЙ:"""
+            
             response = giga.chat(prompt)
             content = response.choices[0].message.content.strip()
-            content = content.replace('``````', '').strip()
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start == -1 or json_end <= json_start:
-                return jsonify({'success': False, 'error': 'Нет JSON в ответе GigaChat'}), 500
-            json_str = content[json_start:json_end]
-            program_data = json.loads(json_str)
-            # Нормализуем
+            
+            try:
+                program_data = parse_json_safely(content, "generate-training-program")
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] JSON ошибка (программа): {e}")
+                # Fallback на шаблон
+                return jsonify({'success': True, 'program': {
+                    'title': f'{goal} — программа ({level})',
+                    'duration': duration,
+                    'schedule': {
+                        'Понедельник': [f'{goal} - базовые упражнения 30 мин'],
+                        'Среда': [f'{goal} - промежуточные упражнения 40 мин'],
+                        'Пятница': [f'{goal} - интенсивные упражнения 45 мин']
+                    }
+                }, 'warning': 'GigaChat вернул невалидный JSON, использован шаблон'}), 200
+            
+            # Валидация и нормализация
             program_data['schedule'] = program_data.get('schedule') or {}
             program_data['title'] = program_data.get('title') or f'{goal} — программа'
             program_data['duration'] = program_data.get('duration') or duration
+            
+            # Убедимся что schedule - объект и содержит необходимые дни
+            if not isinstance(program_data['schedule'], dict):
+                program_data['schedule'] = {}
+            
+            # Добавляем недостающие дни если нужно
+            days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+            for day in days:
+                if day not in program_data['schedule']:
+                    program_data['schedule'][day] = ['отдых'] if day == 'Воскресенье' else []
+            
             return jsonify({'success': True, 'program': program_data})
 
     except Exception as e:
@@ -1056,49 +1391,58 @@ def api_generate_mealplan():
             temperature=0.3
         ) as giga:
 
-            prompt = f"""Ты - помощник-диетолог. Составь план питания на один день в формате строго JSON.
+            prompt = f"""Создай план дневного питания. ВОЗВРАТИ ТОЛЬКО JSON.
 
-Требования:
-- Верни только JSON с ключом "meals" — массив из {meals_count} приёмов пищи
-- Каждый приём пищи — объект с полями: meal_type, food_items (массив строк), calories, proteins, fats, carbs
-- Целевое количество калорий: {calories or '2000'}
+ПАРАМЕТРЫ:
+- Количество приемов: {meals_count}
+- Целевые калории: {calories or '2000'}
 - Предпочтения: {preferences or 'нет'}
-- Ограничения/аллергии: {restrictions or 'нет'}
+- Ограничения: {restrictions or 'нет'}
 
-Пример:
+ВАЖНО: ОБЯЗАТЕЛЬНО УЧИТАЙ ПОЖЕЛАНИЯ И ОГРАНИЧЕНИЯ В КАЖДОМ ПРИЕМЕ!
+
+ТОЧНЫЙ ФОРМАТ:
 {{
   "meals": [
     {{
       "meal_type": "Завтрак",
-      "food_items": ["Овсянка с ягодами 200г", "Яйцо всмятку", "Зелёный чай"],
-      "calories": 450,
+      "food_items": ["Омлет из 2 яиц с овощами 150g", "Хлеб цельнозерновой 30g", "Масло сливочное 10g"],
+      "calories": 350,
       "proteins": 20,
       "fats": 15,
-      "carbs": 60
+      "carbs": 30
+    }},
+    {{
+      "meal_type": "Полдник",
+      "food_items": ["Банан средний 100g"],
+      "calories": 90,
+      "proteins": 1,
+      "fats": 0,
+      "carbs": 23
     }}
   ]
 }}
 
-Верни ТОЛЬКО JSON:"""
+ТРЕБОВАНИЯ:
+1. ТОЛЬКО JSON, БЕЗ текста, комментариев, markdown кодов
+2. "meals" - массив ровно {meals_count} приемов
+3. У каждого приема: meal_type, food_items (массив с величинами), calories, proteins, fats, carbs
+4. Числовые значения вместо строк
+5. food_items - конкретные продукты с граммами/мл
+6. Сумма калорий близко к {calories or '2000'}
+7. ВСЕ БЛЮДА должны соответствовать предпочтениям: {preferences or 'нет'}
+8. ВСЕ БЛЮДА должны избегать: {restrictions or 'нет'}
+
+БЕЗ ПОЯСНЕНИЙ, НАЧНИ С {{:"""
 
             response = giga.chat(prompt)
             content = response.choices[0].message.content.strip()
 
-            print(f"[INFO] GigaChat ответ (план питания): {content[:300]}...")
-
-            content = content.replace('``````', '').strip()
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            
-            if json_start == -1 or json_end <= json_start:
-                return jsonify({'success': False, 'error': 'Нет JSON в ответе'}), 500
-
-            json_str = content[json_start:json_end]
-            
             try:
-                plan = json.loads(json_str)
-            except json.JSONDecodeError:
-                return jsonify({'success': False, 'error': 'Невалидный JSON от GigaChat'}), 500
+                plan = parse_json_safely(content, "generate-mealplan")
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] JSON ошибка (питание): {e}")
+                return jsonify({'success': False, 'error': f'Невалидный JSON: {str(e)[:50]}'}), 500
 
             meals = plan.get('meals') or []
             cleaned = []
@@ -1137,6 +1481,7 @@ def api_generate_recipe():
     cuisine = data.get('cuisine', '')
     dietary = data.get('dietary', '')
     max_calories = data.get('max_calories', '')
+    preferences = data.get('notes', '')  # Дополнительные пожелания от пользователя
 
     # Проверка доступности GigaChat
     if not GIGACHAT_AVAILABLE or GigaChat is None:
@@ -1156,6 +1501,8 @@ def api_generate_recipe():
 
     try:
         print(f"[INFO] Генерация рецепта через GigaChat: {dish_type or 'любое'}, {cuisine or 'любая кухня'}...")
+        if preferences:
+            print(f"[INFO] Пожелания пользователя: {preferences}")
         
         with GigaChat(
             credentials=credentials,
@@ -1164,65 +1511,58 @@ def api_generate_recipe():
             temperature=0.7  # Повышаем для более креативных рецептов
         ) as giga:
 
-            prompt = f"""Ты - профессиональный шеф-повар. Создай детальный кулинарный рецепт в формате JSON.
+            # Строим промт с учетом пожеланий
+            preferences_text = ""
+            if preferences:
+                preferences_text = f"""
+ДОПОЛНИТЕЛЬНЫЕ ПОЖЕЛАНИЯ ПОЛЬЗОВАТЕЛЯ:
+{preferences}
 
-Параметры:
-- Тип блюда: {dish_type or 'основное блюдо'}
+Обязательно учитай эти пожелания при создании рецепта!"""
+
+            prompt = f"""Создай кулинарный рецепт в JSON. ВОЗВРАТИ ТОЛЬКО JSON.
+
+ПАРАМЕТРЫ:
+- Блюдо: {dish_type or 'основное блюдо'}
 - Кухня: {cuisine or 'европейская'}
 - Диета: {dietary or 'обычная'}
-- Максимум калорий: {max_calories or '500'} ккал
+- Макс. калории: {max_calories or '500'} ккал{preferences_text}
 
-СТРОГИЙ ФОРМАТ JSON:
+ОБЯЗАТЕЛЬНЫЙ JSON:
 {{
   "title": "Название блюда",
   "ingredients": [
-    "200г куриной грудки",
-    "100г риса басмати",
-    "1 средняя морковь",
+    "200г куриного филе",
+    "150g рис басмати",
+    "1 морковь средняя",
     "2 ст.л. оливкового масла",
     "Соль, перец по вкусу"
   ],
-  "instructions": "1. Промойте рис и отварите в подсоленной воде 15 минут до готовности. 2. Куриную грудку нарежьте кубиками 2x2 см. 3. Разогрейте сковороду с оливковым маслом на среднем огне. 4. Обжарьте курицу 7-8 минут до золотистой корочки. 5. Морковь натрите на крупной тёрке и добавьте к курице. 6. Тушите 5 минут. 7. Смешайте с рисом, посолите и поперчите.",
-  "calories": 420,
+  "instructions": "1. Промойте рис в холодной воде. 2. Варите рис 12-15 минут. 3. Филе нарежьте на кусочки. 4. На сковороде с маслом обжарьте мясо 6 минут. 5. Натрите морковь и добавьте к мясу. 6. Тушите 5 минут. 7. Смешайте с рисом, посолите.",
+  "calories": 450,
   "proteins": 38,
   "fats": 12,
   "carbs": 45
 }}
 
-ВАЖНО:
-- ingredients - массив строк с точными количествами
-- instructions - подробная пошаговая инструкция одной строкой
-- calories, proteins, fats, carbs - только числа
-- Рецепт должен быть реалистичным и вкусным
+ТРЕБОВАНИЯ:
+1. ТОЛЬКО JSON, БЕЗ текста и markdown
+2. ingredients - массив строк с точными граммами (200g, не "200 граммов")
+3. instructions - один текст с пронумерованными шагами (1. 2. 3. и т.д.)
+4. calories, proteins, fats, carbs - только числа, без кавычек
+5. Итоговые калории близко к {max_calories or '500'}
+6. Рецепт должен соответствовать ДИЕТЕ и другим параметрам{' - учитай пожелания!' if preferences else ''}
 
-Верни ТОЛЬКО JSON без дополнительного текста:"""
+НАЧНИ С {{, БЕЗ ОБЪЯСНЕНИЙ:"""
 
             response = giga.chat(prompt)
             content = response.choices[0].message.content.strip()
 
-            print("=" * 80)
-            print("GIGACHAT ОТВЕТ (РЕЦЕПТ):")
-            print(content[:600])
-            print("=" * 80)
-
-            # Очистка markdown
-            content = content.replace('``````', '').strip()
-            
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-
-            if json_start == -1 or json_end <= json_start:
-                print("[ERROR] JSON не найден в ответе GigaChat")
-                return jsonify({'success': False, 'error': 'Нет JSON в ответе GigaChat'}), 500
-
-            json_str = content[json_start:json_end]
-
             try:
-                recipe_data = json.loads(json_str)
+                recipe_data = parse_json_safely(content, "generate-recipe")
             except json.JSONDecodeError as e:
-                print(f"[ERROR] Ошибка парсинга JSON: {e}")
-                print(f"Проблемный JSON: {json_str[:300]}")
-                return jsonify({'success': False, 'error': f'Невалидный JSON от GigaChat: {str(e)}'}), 500
+                print(f"[ERROR] JSON ошибка (рецепт): {e}")
+                return jsonify({'success': False, 'error': f'Невалидный JSON: {str(e)[:50]}'}), 500
 
             # Валидация обязательных полей
             required = ['title', 'ingredients', 'instructions', 'calories', 'proteins', 'fats', 'carbs']
@@ -1271,15 +1611,14 @@ def api_generate_recipe():
         else:
             return jsonify({'success': False, 'error': f'Ошибка GigaChat: {error_msg}'}), 500
 
-
-
-
-
 # РЕЦЕПТЫ
 @app.route('/nutrition/recipes')
 @login_required
 def recipes():
-    all_recipes = Recipe.query.order_by(Recipe.created_at.desc()).all()
+    if current_user.is_cook() or current_user.is_admin():
+        all_recipes = Recipe.query.order_by(Recipe.created_at.desc()).all()
+    else:
+        all_recipes = Recipe.query.filter_by(status='approved').order_by(Recipe.created_at.desc()).all()
     return render_template('recipes.html', recipes=all_recipes)
 
 
@@ -1315,6 +1654,7 @@ def get_recipe(recipe_id):
 def add_recipe():
     data = request.get_json()
     recipe = Recipe(
+        user_id=current_user.id,
         title=data['title'],
         ingredients=json.dumps(data['ingredients'], ensure_ascii=False),
         instructions=data['instructions'],
@@ -1323,6 +1663,7 @@ def add_recipe():
         fats=data['fats'],
         carbs=data['carbs'],
         image_url=data.get('image_url'),
+        status='pending',
         created_at=datetime.utcnow()
     )
     db.session.add(recipe)
@@ -1393,6 +1734,8 @@ def get_conversation(user_id):
         'sender_id': msg.sender_id,
         'receiver_id': msg.receiver_id,
         'content': msg.content,
+        'message_type': msg.message_type,
+        'file_path': msg.file_path,
         'is_read': msg.is_read,
         'created_at': msg.created_at.strftime('%Y-%m-%d %H:%M:%S'),
         'sender_username': msg.sender.username
@@ -1413,40 +1756,106 @@ def get_conversation(user_id):
 @app.route('/api/messenger/send', methods=['POST'])
 @login_required
 def send_message():
-    data = request.get_json()
-    receiver_id = data.get('receiver_id')
-    content = data.get('content', '').strip()
+    # Поддержка текстовых сообщений
+    if request.is_json:
+        data = request.get_json()
+        receiver_id = data.get('receiver_id')
+        content = data.get('content', '').strip()
+        message_type = data.get('message_type', 'text')
+        
+        if not receiver_id or not content:
+            return jsonify({'success': False, 'error': 'Не указан получатель или текст сообщения'}), 400
+        
+        receiver = User.query.get(receiver_id)
+        if not receiver:
+            return jsonify({'success': False, 'error': 'Получатель не найден'}), 404
+        
+        if receiver_id == current_user.id:
+            return jsonify({'success': False, 'error': 'Нельзя отправить сообщение самому себе'}), 400
+        
+        message = Message(
+            sender_id=current_user.id,
+            receiver_id=receiver_id,
+            content=content,
+            message_type=message_type,
+            is_read=False
+        )
+        db.session.add(message)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': {
+                'id': message.id,
+                'sender_id': message.sender_id,
+                'receiver_id': message.receiver_id,
+                'content': message.content,
+                'message_type': message.message_type,
+                'file_path': message.file_path,
+                'created_at': message.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'sender_username': current_user.username
+            }
+        })
     
-    if not receiver_id or not content:
-        return jsonify({'success': False, 'error': 'Не указан получатель или текст сообщения'}), 400
-    
-    receiver = User.query.get(receiver_id)
-    if not receiver:
-        return jsonify({'success': False, 'error': 'Получатель не найден'}), 404
-    
-    if receiver_id == current_user.id:
-        return jsonify({'success': False, 'error': 'Нельзя отправить сообщение самому себе'}), 400
-    
-    message = Message(
-        sender_id=current_user.id,
-        receiver_id=receiver_id,
-        content=content,
-        is_read=False
-    )
-    db.session.add(message)
-    db.session.commit()
-    
-    return jsonify({
-        'success': True,
-        'message': {
-            'id': message.id,
-            'sender_id': message.sender_id,
-            'receiver_id': message.receiver_id,
-            'content': message.content,
-            'created_at': message.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-            'sender_username': current_user.username
-        }
-    })
+    # Поддержка загрузки файлов и фото
+    elif request.method == 'POST' and 'file' in request.files:
+        file = request.files['file']
+        receiver_id = request.form.get('receiver_id')
+        message_type = request.form.get('message_type', 'file')  # photo или file
+        
+        if not receiver_id or not file:
+            return jsonify({'success': False, 'error': 'Не указан файл или получатель'}), 400
+        
+        receiver = User.query.get(receiver_id)
+        if not receiver:
+            return jsonify({'success': False, 'error': 'Получатель не найден'}), 404
+        
+        if int(receiver_id) == current_user.id:
+            return jsonify({'success': False, 'error': 'Нельзя отправить сообщение самому себе'}), 400
+        
+        # Валидация имени файла
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'Файл не выбран'}), 400
+        
+        # Создаем папку uploads если её нет
+        upload_folder = os.path.join('static', 'uploads')
+        os.makedirs(upload_folder, exist_ok=True)
+        
+        # Генерируем уникальное имя файла
+        from werkzeug.utils import secure_filename
+        filename = secure_filename(file.filename)
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S_')
+        filename = timestamp + filename
+        filepath = os.path.join(upload_folder, filename)
+        file.save(filepath)
+        
+        # Сохраняем URL для доступа в браузере
+        file_url = f'/static/uploads/{filename}'
+        
+        message = Message(
+            sender_id=current_user.id,
+            receiver_id=int(receiver_id),
+            content=f'Отправил(а) {message_type}',
+            message_type=message_type,
+            file_path=file_url,
+            is_read=False
+        )
+        db.session.add(message)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': {
+                'id': message.id,
+                'sender_id': message.sender_id,
+                'receiver_id': message.receiver_id,
+                'content': message.content,
+                'message_type': message.message_type,
+                'file_path': message.file_path,
+                'created_at': message.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'sender_username': current_user.username
+            }
+        })
 
 
 # API: Получить количество непрочитанных сообщений
@@ -1459,6 +1868,47 @@ def get_unread_count():
     ).count()
     
     return jsonify({'success': True, 'count': count})
+
+
+# API: Инициировать звонок
+@app.route('/api/messenger/call', methods=['POST'])
+@login_required
+def initiate_call():
+    data = request.get_json()
+    receiver_id = data.get('receiver_id')
+    call_type = data.get('call_type', 'audio')  # audio или video
+    
+    if not receiver_id:
+        return jsonify({'success': False, 'error': 'Не указан получатель'}), 400
+    
+    receiver = User.query.get(receiver_id)
+    if not receiver:
+        return jsonify({'success': False, 'error': 'Получатель не найден'}), 404
+    
+    if receiver_id == current_user.id:
+        return jsonify({'success': False, 'error': 'Нельзя позвонить самому себе'}), 400
+    
+    # Сохраняем информацию о звонке как сообщение
+    message = Message(
+        sender_id=current_user.id,
+        receiver_id=receiver_id,
+        content=f'Входящий {call_type} звонок от {current_user.username}',
+        message_type='call',
+        file_path=call_type,  # Сохраняем тип звонка
+        is_read=False
+    )
+    db.session.add(message)
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'call_id': message.id,
+        'caller': {
+            'id': current_user.id,
+            'username': current_user.username
+        },
+        'call_type': call_type
+    })
 
 
 # API: Поиск пользователей по никнейму
@@ -1486,535 +1936,470 @@ def search_users():
     return jsonify({'success': True, 'users': users_data})
 
 
-# ============================================
-# ИГРА В КАРТОЧКИ - МАРШРУТЫ
-# ============================================
 
-# Главная страница игры в карточки
-@app.route('/card-game')
+# API: Добавить реакцию на сообщение
+@app.route('/api/messenger/reaction/add', methods=['POST'])
 @login_required
-def card_game():
-    # Мои созданные сессии
-    my_sessions = GameSession.query.filter_by(creator_id=current_user.id).order_by(GameSession.created_at.desc()).all()
-    
-    # Сессии, в которых я участвую
-    my_participations = GameParticipant.query.filter_by(user_id=current_user.id).all()
-    participated_session_ids = [p.session_id for p in my_participations]
-    joined_sessions = GameSession.query.filter(GameSession.id.in_(participated_session_ids)).order_by(GameSession.created_at.desc()).all() if participated_session_ids else []
-    
-    return render_template('card_game.html', 
-                         my_sessions=my_sessions, 
-                         joined_sessions=joined_sessions)
-
-
-# Создать новую игровую сессию
-@app.route('/card-game/create', methods=['GET', 'POST'])
-@login_required
-def create_card_game():
-    if request.method == 'POST':
-        data = request.get_json() if request.is_json else request.form
-        
-        title = data.get('title', '').strip()
-        subject = data.get('subject', '').strip()
-        topic = data.get('topic', '').strip()
-        material_text = data.get('material_text', '').strip()
-        num_cards = int(data.get('num_cards', 10))
-        
-        if not title or not subject or not topic:
-            return jsonify({'success': False, 'error': 'Заполните все обязательные поля'}), 400
-        
-        # Создаем сессию
-        session = GameSession(
-            creator_id=current_user.id,
-            title=title,
-            subject=subject,
-            topic=topic,
-            material_text=material_text,
-            num_cards=num_cards,
-            status='waiting'
-        )
-        db.session.add(session)
-        db.session.commit()
-        
-        return jsonify({'success': True, 'session_id': session.id})
-    
-    return render_template('card_game_create.html')
-
-
-# Просмотр игровой сессии
-@app.route('/card-game/session/<int:session_id>')
-@login_required
-def view_card_game_session(session_id):
-    session = GameSession.query.get_or_404(session_id)
-    
-    # Проверка доступа
-    is_creator = session.creator_id == current_user.id
-    participant = GameParticipant.query.filter_by(session_id=session_id, user_id=current_user.id).first()
-    
-    if not is_creator and not participant:
-        flash('У вас нет доступа к этой игровой сессии', 'error')
-        return redirect(url_for('card_game'))
-    
-    participants = GameParticipant.query.filter_by(session_id=session_id).all()
-    cards = GameCard.query.filter_by(session_id=session_id).order_by(GameCard.order_index).all()
-    
-    return render_template('card_game_session.html',
-                         session=session,
-                         is_creator=is_creator,
-                         participants=participants,
-                         cards=cards,
-                         current_participant=participant)
-
-
-# API: Пригласить друга в игру
-@app.route('/api/card-game/session/<int:session_id>/invite', methods=['POST'])
-@login_required
-def invite_to_card_game(session_id):
-    session = GameSession.query.get_or_404(session_id)
-    
-    # Только создатель может приглашать
-    if session.creator_id != current_user.id:
-        return jsonify({'success': False, 'error': 'Только создатель может приглашать участников'}), 403
-    
+def add_reaction():
     data = request.get_json()
-    user_id = data.get('user_id')
+    message_id = data.get('message_id')
+    emoji = data.get('emoji')
     
-    if not user_id:
-        return jsonify({'success': False, 'error': 'Не указан пользователь'}), 400
+    if not message_id or not emoji:
+        return jsonify({'success': False, 'error': 'Не указано сообщение или эмодзи'}), 400
     
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'success': False, 'error': 'Пользователь не найден'}), 404
+    message = Message.query.get(message_id)
+    if not message:
+        return jsonify({'success': False, 'error': 'Сообщение не найдено'}), 404
     
-    # Проверяем, не приглашен ли уже
-    existing = GameParticipant.query.filter_by(session_id=session_id, user_id=user_id).first()
-    if existing:
-        return jsonify({'success': False, 'error': 'Пользователь уже приглашен'}), 400
+    # Проверяем, что пользователь участник этого диалога
+    if not ((message.sender_id == current_user.id or message.receiver_id == current_user.id) and
+            (message.sender_id == current_user.id or message.receiver_id == current_user.id)):
+        return jsonify({'success': False, 'error': 'Доступ запрещен'}), 403
     
-    # Создаем участника
-    participant = GameParticipant(
-        session_id=session_id,
-        user_id=user_id,
-        status='invited'
-    )
-    db.session.add(participant)
-    
-    # Отправляем сообщение-приглашение
-    message = Message(
-        sender_id=current_user.id,
-        receiver_id=user_id,
-        content=f'🎮 Вас пригласили в игру "{session.title}"! Тема: {session.topic}. Присоединяйтесь: /card-game/session/{session_id}',
-        is_read=False
-    )
-    db.session.add(message)
-    db.session.commit()
-    
-    return jsonify({'success': True, 'participant_id': participant.id})
-
-
-# API: Присоединиться к игре
-@app.route('/api/card-game/session/<int:session_id>/join', methods=['POST'])
-@login_required
-def join_card_game(session_id):
-    session = GameSession.query.get_or_404(session_id)
-    
-    # Проверяем, есть ли приглашение
-    participant = GameParticipant.query.filter_by(session_id=session_id, user_id=current_user.id).first()
-    
-    if not participant:
-        # Если нет приглашения, создаем участника
-        participant = GameParticipant(
-            session_id=session_id,
-            user_id=current_user.id,
-            status='joined'
-        )
-        db.session.add(participant)
-    else:
-        participant.status = 'joined'
-    
-    db.session.commit()
-    
-    return jsonify({'success': True, 'status': 'joined'})
-
-
-# API: Генерация карточек через GigaChat
-@app.route('/api/card-game/session/<int:session_id>/generate-cards', methods=['POST'])
-@login_required
-def generate_cards(session_id):
-    session = GameSession.query.get_or_404(session_id)
-    
-    # Только создатель может генерировать карточки
-    if session.creator_id != current_user.id:
-        return jsonify({'success': False, 'error': 'Только создатель может генерировать карточки'}), 403
-    
-    # Проверка доступности GigaChat
-    if not GIGACHAT_AVAILABLE or GigaChat is None:
-        print("[WARNING] GigaChat недоступен для генерации карточек")
-        # Fallback - создаем простые карточки
-        cards_data = []
-        for i in range(1, session.num_cards + 1):
-            cards_data.append({
-                'question': f'Вопрос {i} по теме: {session.topic}',
-                'answer': f'Ответ на вопрос {i}',
-                'explanation': f'Объяснение для вопроса {i}'
-            })
-        
-        # Сохраняем карточки
-        for idx, card_data in enumerate(cards_data):
-            card = GameCard(
-                session_id=session.id,
-                question=card_data['question'],
-                answer=card_data['answer'],
-                explanation=card_data['explanation'],
-                order_index=idx
-            )
-            db.session.add(card)
-        
-        db.session.commit()
-        return jsonify({'success': True, 'cards_count': len(cards_data), 'warning': 'GigaChat недоступен, использованы тестовые карточки'})
-    
-    credentials = app.config.get('GIGACHAT_CREDENTIALS')
-    if not credentials:
-        return jsonify({'success': False, 'error': 'GIGACHAT_CREDENTIALS не настроены'}), 500
-    
-    try:
-        print(f"[INFO] Генерация {session.num_cards} карточек через GigaChat...")
-        
-        with GigaChat(
-            credentials=credentials,
-            verify_ssl_certs=False,
-            scope="GIGACHAT_API_PERS",
-            temperature=0.3
-        ) as giga:
-            
-            if session.material_text:
-                prompt = f"""Ты - эксперт по образованию. Твоя задача создать ровно {session.num_cards} учебных карточек.
-
-ВНИМАНИЕ: Верни ТОЛЬКО валидный JSON. Никакого текста до или после JSON!
-
-Материал:
-{session.material_text[:3000]}
-
-Вот строгий шаблон JSON, которому ты ДОЛЖЕН следовать:
-{{"cards":[{{"question":"Вопрос 1","answer":"Ответ 1","explanation":"Объяснение 1"}},{{"question":"Вопрос 2","answer":"Ответ 2","explanation":"Объяснение 2"}}]}}
-
-ПРАВИЛА:
-1. Верни ТОЛЬКО JSON (без Markdown блоков, без текста, без пояснений)
-2. Массив "cards" должен содержать ровно {session.num_cards} объектов
-3. Каждый объект должен иметь ключи: "question", "answer", "explanation"
-4. Все значения - строки (strings)
-5. question: проверяет понимание материала (1-2 предложения)
-6. answer: конкретный правильный ответ (1-2 предложения)
-7. explanation: подробное объяснение (3-4 предложения)
-
-Стартуй с {{ и кончай с }}. Больше ничего."""
-            else:
-                prompt = f"""Ты - эксперт по образованию. Твоя задача создать ровно {session.num_cards} учебных карточек.
-
-ВНИМАНИЕ: Верни ТОЛЬКО валидный JSON. Никакого текста до или после JSON!
-
-Предмет: {session.subject}
-Тема: {session.topic}
-
-Вот строгий шаблон JSON, которому ты ДОЛЖЕН следовать:
-{{"cards":[{{"question":"Вопрос 1","answer":"Ответ 1","explanation":"Объяснение 1"}},{{"question":"Вопрос 2","answer":"Ответ 2","explanation":"Объяснение 2"}}]}}
-
-ПРАВИЛА:
-1. Верни ТОЛЬКО JSON (без Markdown блоков, без текста, без пояснений)
-2. Массив "cards" должен содержать ровно {session.num_cards} объектов
-3. Каждый объект должен иметь ключи: "question", "answer", "explanation"
-4. Все значения - строки (strings)
-5. question: проверяет понимание темы (1-2 предложения)
-6. answer: конкретный правильный ответ (1-2 предложения)
-7. explanation: подробное объяснение (3-4 предложения)
-
-Стартуй с {{ и кончай с }}. Больше ничего."""
-
-            response = giga.chat(prompt)
-            content = response.choices[0].message.content.strip()
-            
-            print(f"[INFO] GigaChat ответ (карточки) первые 500 символов: {content[:500]}...")
-            
-            # Агрессивная очистка markdown кода
-            content = content.replace('```json', '').replace('```python', '').replace('```', '').strip()
-            
-            # Найди первый { и последний }
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            
-            if json_start == -1 or json_end <= json_start:
-                print(f"[ERROR] Нет JSON скобок в ответе: {content[:200]}")
-                return jsonify({'success': False, 'error': 'Нет JSON в ответе GigaChat'}), 500
-            
-            json_str = content[json_start:json_end]
-            
-            # Попытка парса JSON с обработкой ошибок
-            try:
-                data = json.loads(json_str)
-                print(f"[OK] JSON успешно распарсен")
-            except json.JSONDecodeError as e:
-                # Пытаемся найти и исправить распространенные ошибки
-                print(f"[ERROR] Первая попытка парса JSON не удалась: {e}")
-                print(f"[DEBUG] JSON строка: {json_str[:300]}...")
-                
-                # Попытка исправления: экранирование конца строк в кавычках
-                try:
-                    # Замена некорректных переводов строк внутри строк
-                    json_str_fixed = json_str.replace('\n', '\\n')
-                    data = json.loads(json_str_fixed)
-                    print(f"[OK] JSON исправлен после замены \\n")
-                except json.JSONDecodeError:
-                    print(f"[ERROR] JSON parse error после попытки исправления: {e}")
-                    return jsonify({'success': False, 'error': f'Невалидный JSON от GigaChat: {str(e)}'}), 500
-            
-            cards_data = data.get('cards', [])
-            
-            if not cards_data or not isinstance(cards_data, list):
-                print(f"[ERROR] Нет массива 'cards' или это не список: {type(cards_data)}")
-                return jsonify({'success': False, 'error': 'Ответ не содержит массив cards'}), 500
-            
-            # Валидация и сохранение карточек
-            valid_cards = []
-            for idx, card_data in enumerate(cards_data):
-                # Проверяем что это словарь
-                if not isinstance(card_data, dict):
-                    print(f"[WARNING] Карточка {idx} не является словарем")
-                    continue
-                
-                # Проверяем все необходимые поля присутствуют и не пусты
-                required_fields = ['question', 'answer', 'explanation']
-                if not all(field in card_data for field in required_fields):
-                    missing = [f for f in required_fields if f not in card_data]
-                    print(f"[WARNING] Карточка {idx} отсутствуют поля: {missing}")
-                    continue
-                
-                # Проверяем что все значения строки и не пусты
-                if not all(isinstance(card_data.get(field, ''), str) and 
-                          card_data.get(field, '').strip() for field in required_fields):
-                    print(f"[WARNING] Карточка {idx} содержит пустые или некорректные значения")
-                    continue
-                
-                # Очищаем значения от дополнительных пробелов
-                card = GameCard(
-                    session_id=session.id,
-                    question=card_data['question'].strip(),
-                    answer=card_data['answer'].strip(),
-                    explanation=card_data['explanation'].strip(),
-                    order_index=idx
-                )
-                db.session.add(card)
-                valid_cards.append(card)
-            
-            if not valid_cards:
-                print(f"[ERROR] Не удалось создать ни одну валидную карточку из {len(cards_data)} данных")
-                return jsonify({'success': False, 'error': 'Не удалось создать валидные карточки'}), 500
-            
-            db.session.commit()
-            
-            print(f"[OK] Успешно создано {len(valid_cards)} из {len(cards_data)} карточек")
-            return jsonify({'success': True, 'cards_count': len(valid_cards), 'total_received': len(cards_data)})
-        
-    except Exception as e:
-        print(f"[ERROR] ERROR в generate_cards: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# API: Начать игру (распределить карточки)
-@app.route('/api/card-game/session/<int:session_id>/start', methods=['POST'])
-@login_required
-def start_card_game(session_id):
-    session = GameSession.query.get_or_404(session_id)
-    
-    # Только создатель может начать игру
-    if session.creator_id != current_user.id:
-        return jsonify({'success': False, 'error': 'Только создатель может начать игру'}), 403
-    
-    # Проверяем, что есть карточки
-    cards = GameCard.query.filter_by(session_id=session_id).all()
-    if not cards:
-        return jsonify({'success': False, 'error': 'Сначала сгенерируйте карточки'}), 400
-    
-    # Получаем участников (включая создателя)
-    participants = GameParticipant.query.filter_by(session_id=session_id).all()
-    participant_ids = [p.user_id for p in participants]
-    
-    # Добавляем создателя, если его нет в участниках
-    if current_user.id not in participant_ids:
-        creator_participant = GameParticipant(
-            session_id=session_id,
-            user_id=current_user.id,
-            status='joined'
-        )
-        db.session.add(creator_participant)
-        participants.append(creator_participant)
-        participant_ids.append(current_user.id)
-    
-    if len(participant_ids) < 2:
-        return jsonify({'success': False, 'error': 'Нужно минимум 2 участника для начала игры'}), 400
-    
-    # Рандомно распределяем карточки
-    import random
-    random.shuffle(cards)
-    
-    for idx, card in enumerate(cards):
-        # Назначаем карточку участнику
-        assigned_to = participant_ids[idx % len(participant_ids)]
-        
-        # Назначаем проверяющего (следующий участник по кругу)
-        checker_idx = (participant_ids.index(assigned_to) + 1) % len(participant_ids)
-        checked_by = participant_ids[checker_idx]
-        
-        card.assigned_to_user_id = assigned_to
-        card.checked_by_user_id = checked_by
-    
-    session.status = 'in_progress'
-    session.started_at = datetime.utcnow()
-    
-    db.session.commit()
-    
-    return jsonify({'success': True, 'status': 'in_progress'})
-
-
-# Страница игры (отвечаем на вопросы)
-@app.route('/card-game/session/<int:session_id>/play')
-@login_required
-def play_card_game(session_id):
-    session = GameSession.query.get_or_404(session_id)
-    
-    # Проверка доступа
-    participant = GameParticipant.query.filter_by(session_id=session_id, user_id=current_user.id).first()
-    is_creator = session.creator_id == current_user.id
-    
-    if not participant and not is_creator:
-        flash('У вас нет доступа к этой игре', 'error')
-        return redirect(url_for('card_game'))
-    
-    if session.status != 'in_progress':
-        flash('Игра еще не началась или уже завершена', 'warning')
-        return redirect(url_for('view_card_game_session', session_id=session_id))
-    
-    # Карточки, назначенные текущему пользователю (на которые он отвечает)
-    my_cards = GameCard.query.filter_by(session_id=session_id, assigned_to_user_id=current_user.id).order_by(GameCard.order_index).all()
-    
-    # Карточки, которые проверяет текущий пользователь
-    checking_cards = GameCard.query.filter_by(session_id=session_id, checked_by_user_id=current_user.id).order_by(GameCard.order_index).all()
-    
-    return render_template('card_game_play.html',
-                         session=session,
-                         my_cards=my_cards,
-                         checking_cards=checking_cards)
-
-
-# API: Отправить ответ на карточку
-@app.route('/api/card-game/card/<int:card_id>/answer', methods=['POST'])
-@login_required
-def submit_card_answer(card_id):
-    card = GameCard.query.get_or_404(card_id)
-    
-    # Проверяем, что карточка назначена текущему пользователю
-    if card.assigned_to_user_id != current_user.id:
-        return jsonify({'success': False, 'error': 'Эта карточка не назначена вам'}), 403
-    
-    data = request.get_json()
-    answer_text = data.get('answer_text', '').strip()
-    
-    if not answer_text:
-        return jsonify({'success': False, 'error': 'Ответ не может быть пустым'}), 400
-    
-    # Проверяем, не отвечал ли уже
-    existing = GameAnswer.query.filter_by(card_id=card_id, user_id=current_user.id).first()
-    if existing:
-        return jsonify({'success': False, 'error': 'Вы уже ответили на эту карточку'}), 400
-    
-    # Создаем ответ
-    answer = GameAnswer(
-        card_id=card_id,
+    # Проверяем, есть ли уже такая реакция
+    existing = MessageReaction.query.filter_by(
+        message_id=message_id,
         user_id=current_user.id,
-        checked_by_user_id=card.checked_by_user_id,
-        answer_text=answer_text
-    )
-    db.session.add(answer)
-    db.session.commit()
-    
-    return jsonify({'success': True, 'answer_id': answer.id})
-
-
-# API: Оценить ответ товарища
-@app.route('/api/card-game/answer/<int:answer_id>/rate', methods=['POST'])
-@login_required
-def rate_card_answer(answer_id):
-    answer = GameAnswer.query.get_or_404(answer_id)
-    
-    # Проверяем, что текущий пользователь проверяет этот ответ
-    if answer.checked_by_user_id != current_user.id:
-        return jsonify({'success': False, 'error': 'Вы не можете проверять этот ответ'}), 403
-    
-    data = request.get_json()
-    rating = data.get('rating')
-    feedback = data.get('feedback', '').strip()
-    is_correct = data.get('is_correct')
-    
-    if rating is None or not (1 <= int(rating) <= 5):
-        return jsonify({'success': False, 'error': 'Рейтинг должен быть от 1 до 5'}), 400
-    
-    # Обновляем ответ
-    answer.rating = int(rating)
-    answer.feedback = feedback
-    answer.is_correct = bool(is_correct)
-    answer.checked_at = datetime.utcnow()
-    
-    # Обновляем баллы участника
-    participant = GameParticipant.query.filter_by(
-        session_id=answer.card.session_id,
-        user_id=answer.user_id
+        emoji=emoji
     ).first()
     
-    if participant:
-        participant.score += int(rating)
-    
-    db.session.commit()
-    
-    return jsonify({'success': True})
+    if existing:
+        # Если реакция уже есть, удаляем её (toggle)
+        db.session.delete(existing)
+        db.session.commit()
+        return jsonify({'success': True, 'action': 'removed'})
+    else:
+        # Добавляем новую реакцию
+        reaction = MessageReaction(
+            message_id=message_id,
+            user_id=current_user.id,
+            emoji=emoji
+        )
+        db.session.add(reaction)
+        db.session.commit()
+        return jsonify({'success': True, 'action': 'added'})
 
 
-# API: Завершить игру
-@app.route('/api/card-game/session/<int:session_id>/complete', methods=['POST'])
+# API: Получить реакции на сообщение
+@app.route('/api/messenger/message/<int:message_id>/reactions', methods=['GET'])
 @login_required
-def complete_card_game(session_id):
-    session = GameSession.query.get_or_404(session_id)
+def get_reactions(message_id):
+    message = Message.query.get(message_id)
+    if not message:
+        return jsonify({'success': False, 'error': 'Сообщение не найдено'}), 404
     
-    # Только создатель может завершить игру
-    if session.creator_id != current_user.id:
-        return jsonify({'success': False, 'error': 'Только создатель может завершить игру'}), 403
+    # Проверяем, что пользователь участник этого диалога
+    if not ((message.sender_id == current_user.id) or (message.receiver_id == current_user.id)):
+        return jsonify({'success': False, 'error': 'Доступ запрещен'}), 403
     
-    session.status = 'completed'
-    session.completed_at = datetime.utcnow()
+    # Получаем все реакции и группируем по эмодзи
+    reactions = MessageReaction.query.filter_by(message_id=message_id).all()
     
-    # Обновляем статус участников
-    participants = GameParticipant.query.filter_by(session_id=session_id).all()
-    for p in participants:
-        p.status = 'completed'
+    reactions_dict = {}
+    for reaction in reactions:
+        emoji = reaction.emoji
+        if emoji not in reactions_dict:
+            reactions_dict[emoji] = {
+                'emoji': emoji,
+                'count': 0,
+                'users': [],
+                'current_user_reacted': False
+            }
+        reactions_dict[emoji]['count'] += 1
+        reactions_dict[emoji]['users'].append({
+            'id': reaction.user.id,
+            'username': reaction.user.username,
+            'nickname': reaction.user.nickname or reaction.user.username
+        })
+        if reaction.user_id == current_user.id:
+            reactions_dict[emoji]['current_user_reacted'] = True
     
-    db.session.commit()
-    
-    return jsonify({'success': True, 'status': 'completed'})
+    return jsonify({
+        'success': True,
+        'reactions': list(reactions_dict.values())
+    })
 
 
-# API: Удалить игровую сессию
-@app.route('/api/card-game/session/<int:session_id>', methods=['DELETE'])
+# ===== УПРАВЛЕНИЕ СТУДЕНТАМИ ДЛЯ УЧИТЕЛЕЙ =====
+
+# API: Получить список свободных студентов для учителя
+@app.route('/api/teacher/available-students', methods=['GET'])
 @login_required
-def delete_card_game_session(session_id):
-    session = GameSession.query.get_or_404(session_id)
+def get_available_students():
+    if current_user.role != 'teacher':
+        return jsonify({'success': False, 'error': 'Только учителя могут добавлять студентов'}), 403
     
-    # Только создатель может удалить
-    if session.creator_id != current_user.id:
-        return jsonify({'success': False, 'error': 'Только создатель может удалить игру'}), 403
+    # Получаем студентов без учителя
+    students_without_teacher = User.query.filter(
+        User.role == 'student',
+        User.mentor_id.is_(None)
+    ).all()
     
-    db.session.delete(session)
+    students_data = [{
+        'id': student.id,
+        'username': student.username,
+        'nickname': student.nickname or student.username,
+        'email': student.email
+    } for student in students_without_teacher]
+    
+    return jsonify({
+        'success': True,
+        'students': students_data,
+        'count': len(students_data)
+    })
+
+
+# API: Получить список студентов учителя
+@app.route('/api/teacher/my-students', methods=['GET'])
+@login_required
+def get_my_students():
+    if current_user.role != 'teacher':
+        return jsonify({'success': False, 'error': 'Только учителя могут просматривать студентов'}), 403
+    
+    students = User.query.filter_by(mentor_id=current_user.id).all()
+    
+    students_data = [{
+        'id': student.id,
+        'username': student.username,
+        'nickname': student.nickname or student.username,
+        'email': student.email,
+        'created_at': student.created_at.strftime('%Y-%m-%d %H:%M:%S')
+    } for student in students]
+    
+    return jsonify({
+        'success': True,
+        'students': students_data,
+        'count': len(students_data)
+    })
+
+
+# API: Добавить студента к учителю
+@app.route('/api/teacher/add-student', methods=['POST'])
+@login_required
+def add_student():
+    if current_user.role != 'teacher':
+        return jsonify({'success': False, 'error': 'Только учителя могут добавлять студентов'}), 403
+    
+    data = request.get_json()
+    student_id = data.get('student_id')
+    
+    if not student_id:
+        return jsonify({'success': False, 'error': 'Не указан ID студента'}), 400
+    
+    student = User.query.get(student_id)
+    if not student:
+        return jsonify({'success': False, 'error': 'Студент не найден'}), 404
+    
+    if student.role != 'student':
+        return jsonify({'success': False, 'error': 'Это не студент'}), 400
+    
+    if student.mentor_id is not None:
+        return jsonify({'success': False, 'error': 'Этот студент уже привязан к другому учителю'}), 400
+    
+    # Привязываем студента к учителю
+    student.mentor_id = current_user.id
     db.session.commit()
     
+    return jsonify({
+        'success': True,
+        'message': f'Студент {student.username} успешно добавлен',
+        'student': {
+            'id': student.id,
+            'username': student.username,
+            'nickname': student.nickname or student.username
+        }
+    })
+
+
+# API: Удалить студента у учителя
+@app.route('/api/teacher/remove-student/<int:student_id>', methods=['DELETE'])
+@login_required
+def remove_student(student_id):
+    if current_user.role != 'teacher':
+        return jsonify({'success': False, 'error': 'Только учителя могут удалять студентов'}), 403
+    
+    student = User.query.get(student_id)
+    if not student:
+        return jsonify({'success': False, 'error': 'Студент не найден'}), 404
+    
+    if student.mentor_id != current_user.id:
+        return jsonify({'success': False, 'error': 'Этот студент не ваш'}), 403
+    
+    student.mentor_id = None
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'message': f'Студент {student.username} удален'
+    })
+
+
+# API: Получить учителя студента
+@app.route('/api/student/my-teacher', methods=['GET'])
+@login_required
+def get_my_teacher():
+    if current_user.role != 'student':
+        return jsonify({'success': False, 'error': 'Только студенты могут просматривать учителя'}), 403
+    
+    if not current_user.mentor:
+        return jsonify({
+            'success': True,
+            'has_teacher': False,
+            'message': 'У вас нет назначенного учителя'
+        })
+    
+    teacher = current_user.mentor
+    return jsonify({
+        'success': True,
+        'has_teacher': True,
+        'teacher': {
+            'id': teacher.id,
+            'username': teacher.username,
+            'nickname': teacher.nickname or teacher.username,
+            'email': teacher.email
+        }
+    })
+
+
+
+# ==================== КАБИНЕТ ПОВАРА ====================
+
+@app.route('/profile/cook')
+@login_required
+def cook_profile():
+    if not current_user.is_cook():
+        return redirect(url_for('profile'))
+
+    pending_recipes = Recipe.query.filter_by(status='pending').order_by(Recipe.created_at.desc()).all()
+    approved_recipes = Recipe.query.filter_by(status='approved').order_by(Recipe.created_at.desc()).all()
+    rejected_count = Recipe.query.filter_by(status='rejected').count()
+
+    return render_template('cook_profile.html',
+                         pending_recipes=pending_recipes,
+                         approved_recipes=approved_recipes,
+                         rejected_count=rejected_count)
+
+
+@app.route('/cook/recipe/<int:recipe_id>/approve', methods=['POST'])
+@login_required
+def cook_approve_recipe(recipe_id):
+    if not current_user.is_cook() and not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    recipe = Recipe.query.get_or_404(recipe_id)
+    recipe.status = 'approved'
+    log = ActivityLog(user_id=current_user.id, action='recipe_approved',
+                      details=f'Рецепт "{recipe.title}" одобрен')
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Рецепт одобрен'})
+
+
+@app.route('/cook/recipe/<int:recipe_id>/reject', methods=['POST'])
+@login_required
+def cook_reject_recipe(recipe_id):
+    if not current_user.is_cook() and not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    recipe = Recipe.query.get_or_404(recipe_id)
+    recipe.status = 'rejected'
+    log = ActivityLog(user_id=current_user.id, action='recipe_rejected',
+                      details=f'Рецепт "{recipe.title}" отклонён')
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Рецепт отклонён'})
+
+
+# ==================== АДМИН-ПАНЕЛЬ ====================
+
+@app.route('/admin')
+@login_required
+def admin_panel():
+    if not current_user.is_admin():
+        flash('Доступ запрещён', 'error')
+        return redirect(url_for('dashboard'))
+
+    users = User.query.order_by(User.created_at.desc()).all()
+    pending_users = User.query.filter_by(is_approved=False).all()
+    notifications = AdminNotification.query.filter_by(is_read=False).order_by(AdminNotification.created_at.desc()).all()
+    recent_logs = ActivityLog.query.order_by(ActivityLog.created_at.desc()).limit(50).all()
+
+    total_users = User.query.count()
+    total_students = User.query.filter_by(role='student').count()
+    total_teachers = User.query.filter_by(role='teacher', is_approved=True).count()
+    total_cooks = User.query.filter_by(role='cook', is_approved=True).count()
+    total_recipes = Recipe.query.count()
+    pending_recipes = Recipe.query.filter_by(status='pending').count()
+    total_tests = TestResult.query.count()
+
+    return render_template('admin_panel.html',
+                         users=users,
+                         pending_users=pending_users,
+                         notifications=notifications,
+                         recent_logs=recent_logs,
+                         total_users=total_users,
+                         total_students=total_students,
+                         total_teachers=total_teachers,
+                         total_cooks=total_cooks,
+                         total_recipes=total_recipes,
+                         pending_recipes=pending_recipes,
+                         total_tests=total_tests)
+
+
+@app.route('/admin/approve-user/<int:user_id>', methods=['POST'])
+@login_required
+def admin_approve_user(user_id):
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    user = User.query.get_or_404(user_id)
+    user.is_approved = True
+
+    # Помечаем уведомление как прочитанное
+    notif = AdminNotification.query.filter_by(related_user_id=user.id, type='registration', is_read=False).first()
+    if notif:
+        notif.is_read = True
+
+    log = ActivityLog(user_id=current_user.id, action='user_approved',
+                      details=f'Админ одобрил пользователя {user.username} ({user.role})')
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Пользователь {user.username} одобрен'})
+
+
+@app.route('/admin/reject-user/<int:user_id>', methods=['POST'])
+@login_required
+def admin_reject_user(user_id):
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    user = User.query.get_or_404(user_id)
+
+    notif = AdminNotification.query.filter_by(related_user_id=user.id, type='registration', is_read=False).first()
+    if notif:
+        notif.is_read = True
+
+    log = ActivityLog(user_id=current_user.id, action='user_rejected',
+                      details=f'Админ отклонил регистрацию {user.username} ({user.role})')
+    db.session.add(log)
+
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Заявка пользователя отклонена'})
+
+
+@app.route('/admin/ban-user/<int:user_id>', methods=['POST'])
+@login_required
+def admin_ban_user(user_id):
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    user = User.query.get_or_404(user_id)
+    if user.is_admin():
+        return jsonify({'success': False, 'error': 'Нельзя заблокировать админа'}), 403
+
+    user.is_banned = not user.is_banned
+    status = 'заблокирован' if user.is_banned else 'разблокирован'
+    log = ActivityLog(user_id=current_user.id, action='user_ban_toggle',
+                      details=f'Пользователь {user.username} {status}')
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Пользователь {user.username} {status}', 'is_banned': user.is_banned})
+
+
+@app.route('/admin/delete-user/<int:user_id>', methods=['DELETE'])
+@login_required
+def admin_delete_user(user_id):
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    user = User.query.get_or_404(user_id)
+    if user.is_admin():
+        return jsonify({'success': False, 'error': 'Нельзя удалить админа'}), 403
+
+    username = user.username
+    log = ActivityLog(user_id=current_user.id, action='user_deleted',
+                      details=f'Админ удалил пользователя {username} ({user.role})')
+    db.session.add(log)
+
+    # Удаляем связанные данные
+    TestResult.query.filter_by(user_id=user.id).delete()
+    PhysicalEducationResult.query.filter_by(user_id=user.id).delete()
+    TrainingProgram.query.filter_by(user_id=user.id).delete()
+    NutritionDiary.query.filter_by(user_id=user.id).delete()
+    Recipe.query.filter_by(user_id=user.id).delete()
+    Message.query.filter(or_(Message.sender_id == user.id, Message.receiver_id == user.id)).delete()
+    Homework.query.filter_by(user_id=user.id).delete()
+    AdminNotification.query.filter_by(related_user_id=user.id).delete()
+
+    # Открепляем учеников
+    User.query.filter_by(mentor_id=user.id).update({'mentor_id': None})
+
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Пользователь {username} удалён'})
+
+
+@app.route('/admin/change-nickname/<int:user_id>', methods=['POST'])
+@login_required
+def admin_change_nickname(user_id):
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    user = User.query.get_or_404(user_id)
+    data = request.get_json()
+    new_nickname = data.get('nickname', '').strip()
+
+    if not new_nickname:
+        return jsonify({'success': False, 'error': 'Никнейм не может быть пустым'}), 400
+
+    existing = User.query.filter_by(nickname=new_nickname).first()
+    if existing and existing.id != user.id:
+        return jsonify({'success': False, 'error': 'Этот никнейм уже занят'}), 400
+
+    old_nickname = user.nickname
+    user.nickname = new_nickname
+    log = ActivityLog(user_id=current_user.id, action='nickname_changed',
+                      details=f'Никнейм пользователя {user.username} изменён: {old_nickname} → {new_nickname}')
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Никнейм изменён на {new_nickname}'})
+
+
+@app.route('/admin/change-role/<int:user_id>', methods=['POST'])
+@login_required
+def admin_change_role(user_id):
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    user = User.query.get_or_404(user_id)
+    if user.is_admin():
+        return jsonify({'success': False, 'error': 'Нельзя менять роль админа'}), 403
+
+    data = request.get_json()
+    new_role = data.get('role', '')
+    if new_role not in ['student', 'teacher', 'cook']:
+        return jsonify({'success': False, 'error': 'Недопустимая роль'}), 400
+
+    old_role = user.role
+    user.role = new_role
+    user.is_approved = True
+    log = ActivityLog(user_id=current_user.id, action='role_changed',
+                      details=f'Роль пользователя {user.username} изменена: {old_role} → {new_role}')
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Роль изменена на {new_role}'})
+
+
+@app.route('/admin/notifications/read-all', methods=['POST'])
+@login_required
+def admin_read_all_notifications():
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+
+    AdminNotification.query.filter_by(is_read=False).update({'is_read': True})
+    db.session.commit()
     return jsonify({'success': True})
 
 

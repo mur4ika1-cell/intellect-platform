@@ -217,6 +217,198 @@
     #searchResults .conversation-item:last-child {
         border-bottom: none;
     }
+
+    #fileInput {
+        display: none;
+    }
+
+    .file-attachment-display {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 1rem;
+        background: #f0f7ff;
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+        border: 1px solid #cce5ff;
+    }
+
+    .file-attachment-display i {
+        font-size: 2rem;
+        color: #3498db;
+    }
+
+    .file-attachment-info {
+        flex: 1;
+    }
+
+    .file-attachment-name {
+        font-weight: bold;
+        color: #333;
+        word-break: break-word;
+    }
+
+    .file-attachment-size {
+        font-size: 0.85rem;
+        color: #666;
+        margin-top: 0.25rem;
+    }
+
+    .file-attachment-remove {
+        background: transparent;
+        border: none;
+        color: #e74c3c;
+        cursor: pointer;
+        font-size: 1.2rem;
+        padding: 0;
+        transition: transform 0.2s;
+    }
+
+    .file-attachment-remove:hover {
+        transform: scale(1.2);
+    }
+
+    .message-reactions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        margin-top: 0.5rem;
+        font-size: 0.85rem;
+    }
+
+    .reaction-button {
+        background: #f0f0f0;
+        border: 1px solid #d0d0d0;
+        border-radius: 16px;
+        padding: 0.25rem 0.5rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 1rem;
+        transition: all 0.2s;
+    }
+
+    .reaction-button:hover {
+        background: #e0e0e0;
+        transform: scale(1.1);
+    }
+
+    .reaction-button.active {
+        background: #3498db;
+        color: white;
+        border-color: #3498db;
+    }
+
+    .reaction-count {
+        font-size: 0.8rem;
+        line-height: 1;
+    }
+
+    .emoji-picker-btn {
+        padding: 0.75rem 1rem;
+        background: #f0f0f0;
+        color: #333;
+        border: 1px solid #ddd;
+        border-radius: 20px;
+        cursor: pointer;
+        font-size: 1.2rem;
+        transition: background 0.2s;
+    }
+
+    .emoji-picker-btn:hover {
+        background: #e0e0e0;
+    }
+
+    .emoji-picker {
+        position: fixed;
+        bottom: auto;
+        right: 20px;
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 1000;
+        max-width: 350px;
+        display: none;
+    }
+
+    .emoji-picker.active {
+        display: block;
+    }
+
+    .emoji-picker-header {
+        padding: 0.75rem;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .emoji-picker-close {
+        background: none;
+        border: none;
+        font-size: 1.2rem;
+        cursor: pointer;
+        color: #666;
+    }
+
+    .emoji-grid {
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        gap: 0.5rem;
+        padding: 0.75rem;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .emoji-item {
+        font-size: 1.5rem;
+        cursor: pointer;
+        text-align: center;
+        padding: 0.5rem;
+        border-radius: 4px;
+        transition: background 0.2s;
+    }
+
+    .emoji-item:hover {
+        background: #f0f0f0;
+        transform: scale(1.2);
+    }
+
+    .message-actions {
+        position: absolute;
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        padding: 0.5rem;
+        display: flex;
+        gap: 0.5rem;
+        z-index: 500;
+    }
+
+    .message-action-btn {
+        background: none;
+        border: none;
+        font-size: 1.2rem;
+        cursor: pointer;
+        padding: 0.5rem;
+        border-radius: 4px;
+        transition: background 0.2s;
+    }
+
+    .message-action-btn:hover {
+        background: #f0f0f0;
+    }
+
+    .message-wrapper {
+        position: relative;
+        display: inline-flex;
+        flex-direction: column;
+    }
+
+
 </style>
 {% endblock %}
 
@@ -289,10 +481,53 @@
             </div>
             
             <div class="chat-input-area" id="chatInputArea" style="display: none;">
-                <input type="text" class="chat-input" id="messageInput" placeholder="Введите сообщение..." onkeypress="handleKeyPress(event)">
-                <button class="send-btn" onclick="sendMessage()" id="sendBtn">
-                    <i class="bi bi-send"></i> Отправить
-                </button>
+                <div style="width: 100%; display: flex; flex-direction: column; gap: 0.5rem;">
+                    <div id="fileAttachmentDisplay" style="display: none;">
+                        <div class="file-attachment-display">
+                            <i id="fileAttachmentIcon" class="bi bi-file-earmark"></i>
+                            <div class="file-attachment-info">
+                                <div class="file-attachment-name" id="fileAttachmentName"></div>
+                                <div class="file-attachment-size" id="fileAttachmentSize"></div>
+                            </div>
+                            <button class="file-attachment-remove" onclick="clearFileSelection()">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
+                        <input type="text" class="chat-input" id="messageInput" placeholder="Введите сообщение..." onkeypress="handleKeyPress(event)">
+                        <input type="file" id="fileInput" style="display: none;" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" onchange="handleFileSelect()">
+                        <button class="emoji-picker-btn" title="Смайлик" onclick="toggleEmojiPicker()">😊</button>
+                        <button class="send-btn" onclick="document.getElementById('fileInput').click()" id="attachBtn" style="padding: 0.75rem 1rem;" title="Прикрепить файл или фото">
+                            <i class="bi bi-paperclip"></i>
+                        </button>
+                        <button class="send-btn" onclick="sendMessage()" id="sendBtn" title="Отправить сообщение">
+                            <i class="bi bi-send"></i> Отправить
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Эмодзи пикер для выбора реакций -->
+            <div id="emojiPickerForReactions" class="emoji-picker">
+                <div class="emoji-picker-header">
+                    <span>Выберите эмодзи</span>
+                    <button class="emoji-picker-close" onclick="closeReactionPicker()">✕</button>
+                </div>
+                <div class="emoji-grid" id="reactionEmojiGrid">
+                    <!-- Будет заполнено JavaScript -->
+                </div>
+            </div>
+            
+            <!-- Эмодзи пикер для вставки в текст -->
+            <div id="emojiPickerForText" class="emoji-picker">
+                <div class="emoji-picker-header">
+                    <span>Выберите эмодзи</span>
+                    <button class="emoji-picker-close" onclick="closeEmojiPicker()">✕</button>
+                </div>
+                <div class="emoji-grid" id="textEmojiGrid">
+                    <!-- Будет заполнено JavaScript -->
+                </div>
             </div>
         </div>
     </div>
@@ -382,7 +617,56 @@ function displayMessages(messages) {
         
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
-        bubble.textContent = msg.content;
+        bubble.style.maxWidth = msg.message_type === 'photo' ? '300px' : '70%';
+        
+        // Обработка разных типов сообщений
+        if (msg.message_type === 'photo' && msg.file_path) {
+            // Фото
+            const img = document.createElement('img');
+            img.src = msg.file_path;
+            img.style.maxWidth = '100%';
+            img.style.borderRadius = '8px';
+            img.style.cursor = 'pointer';
+            img.onclick = () => window.open(msg.file_path, '_blank');
+            bubble.appendChild(img);
+        } else if (msg.message_type === 'file' && msg.file_path) {
+            // Файл
+            const fileName = msg.file_path.split('/').pop().substring(16); // Убираем временную метку
+            const fileExt = fileName.split('.').pop().toLowerCase();
+            const fileIcon = getFileIcon(fileExt);
+            
+            const fileDiv = document.createElement('div');
+            fileDiv.style.cssText = 'display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: rgba(255,255,255,0.2); border-radius: 8px;';
+            
+            const icon = document.createElement('i');
+            icon.className = fileIcon;
+            icon.style.fontSize = '1.5rem';
+            
+            const fileInfo = document.createElement('div');
+            fileInfo.style.flex = '1';
+            fileInfo.innerHTML = `
+                <div style="font-weight: bold; word-break: break-word;">${fileName}</div>
+            `;
+            
+            const downloadBtn = document.createElement('a');
+            downloadBtn.href = msg.file_path;
+            downloadBtn.download = fileName;
+            downloadBtn.className = 'btn btn-sm btn-light';
+            downloadBtn.innerHTML = '<i class="bi bi-download"></i>';
+            downloadBtn.style.marginLeft = '0.5rem';
+            
+            fileDiv.appendChild(icon);
+            fileDiv.appendChild(fileInfo);
+            fileDiv.appendChild(downloadBtn);
+            bubble.appendChild(fileDiv);
+        } else if (msg.message_type === 'call') {
+            // Звонок
+            bubble.textContent = '📞 ' + msg.content;
+            bubble.style.fontStyle = 'italic';
+        } else {
+            // Текстовое сообщение
+            bubble.textContent = msg.content;
+        }
         
         const time = document.createElement('div');
         time.className = 'message-time';
@@ -396,6 +680,10 @@ function displayMessages(messages) {
         
         messageDiv.appendChild(bubble);
         messageDiv.appendChild(time);
+        
+        // Загружаем реакции untuk сообщения
+        loadMessageReactions(msg.id, messageDiv);
+        
         messagesContainer.appendChild(messageDiv);
     });
     
@@ -403,72 +691,223 @@ function displayMessages(messages) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
+function getFileIcon(ext) {
+    const icons = {
+        'pdf': 'bi bi-file-pdf',
+        'doc': 'bi bi-file-word',
+        'docx': 'bi bi-file-word',
+        'xls': 'bi bi-file-excel',
+        'xlsx': 'bi bi-file-excel',
+        'txt': 'bi bi-file-text',
+        'jpg': 'bi bi-file-image',
+        'png': 'bi bi-file-image',
+        'jpeg': 'bi bi-file-image',
+        'zip': 'bi bi-file-zip',
+        'rar': 'bi bi-file-zip'
+    };
+    return icons[ext] || 'bi bi-file-earmark';
+}
+
+let selectedFile = null;
+
+function handleFileSelect() {
+    const fileInput = document.getElementById('fileInput');
+    selectedFile = fileInput.files[0] || null;
+    
+    if (selectedFile) {
+        const fileAttachmentDisplay = document.getElementById('fileAttachmentDisplay');
+        const fileName = selectedFile.name;
+        const fileSize = (selectedFile.size / 1024).toFixed(2);
+        const fileExt = fileName.split('.').pop().toLowerCase();
+        
+        // Обновляем иконку на основе типа файла
+        const fileIcon = document.getElementById('fileAttachmentIcon');
+        fileIcon.className = getFileIcon(fileExt).replace('bi bi-', 'bi bi-') || 'bi bi-file-earmark';
+        
+        // Обновляем информацию о файле
+        document.getElementById('fileAttachmentName').textContent = fileName;
+        document.getElementById('fileAttachmentSize').textContent = `${fileSize} KB`;
+        
+        // Показываем блок с информацией о файле
+        fileAttachmentDisplay.style.display = 'block';
+    }
+}
+
+function clearFileSelection() {
+    selectedFile = null;
+    document.getElementById('fileInput').value = '';
+    document.getElementById('fileAttachmentDisplay').style.display = 'none';
+}
+
 function sendMessage() {
     const input = document.getElementById('messageInput');
     const content = input.value.trim();
     
-    if (!content || !currentUserId) {
+    if (!content && !selectedFile && !currentUserId) {
         return;
     }
     
     const sendBtn = document.getElementById('sendBtn');
     sendBtn.disabled = true;
-    sendBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Отправка...';
+    sendBtn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
     
-    fetch('/api/messenger/send', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            receiver_id: currentUserId,
-            content: content
+    if (selectedFile) {
+        // Отправка файла
+        const formData = new FormData();
+        formData.append('receiver_id', currentUserId);
+        formData.append('file', selectedFile);
+        formData.append('message', content || `Файл: ${selectedFile.name}`);
+        
+        const isImage = selectedFile.type.startsWith('image/');
+        const fileName = selectedFile.name;
+        
+        fetch('/api/messenger/send', {
+            method: 'POST',
+            body: formData
         })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            input.value = '';
-            // Добавляем новое сообщение сразу в чат
-            const messagesContainer = document.getElementById('chatMessages');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message sent';
-            
-            const bubble = document.createElement('div');
-            bubble.className = 'message-bubble';
-            bubble.textContent = content;
-            
-            const time = document.createElement('div');
-            time.className = 'message-time';
-            const now = new Date();
-            time.textContent = now.toLocaleString('ru-RU', {
-                day: '2-digit',
-                month: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-            
-            messageDiv.appendChild(bubble);
-            messageDiv.appendChild(time);
-            messagesContainer.appendChild(messageDiv);
-            
-            // Прокрутка вниз
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            
-            // Обновляем список диалогов без перезагрузки страницы
-            updateConversationPreview(currentUserId, content);
-        } else {
-            alert('Ошибка отправки: ' + (data.error || 'Неизвестная ошибка'));
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                input.value = '';
+                clearFileSelection();
+                
+                // Добавляем файлово сообщение в чат
+                const messagesContainer = document.getElementById('chatMessages');
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message sent';
+                
+                const bubble = document.createElement('div');
+                bubble.className = 'message-bubble';
+                bubble.style.maxWidth = isImage ? '300px' : '70%';
+                
+                if (isImage) {
+                    const img = document.createElement('img');
+                    img.src = data.message.file_path;
+                    img.style.maxWidth = '100%';
+                    img.style.borderRadius = '8px';
+                    img.style.cursor = 'pointer';
+                    img.onclick = () => window.open(data.message.file_path, '_blank');
+                    bubble.appendChild(img);
+                } else {
+                    const filePathName = data.message.file_path.split('/').pop().substring(16);
+                    const fileExt = filePathName.split('.').pop().toLowerCase();
+                    const fileIcon = getFileIcon(fileExt);
+                    
+                    const fileDiv = document.createElement('div');
+                    fileDiv.style.cssText = 'display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: rgba(255,255,255,0.2); border-radius: 8px;';
+                    
+                    const icon = document.createElement('i');
+                    icon.className = fileIcon;
+                    icon.style.fontSize = '1.5rem';
+                    
+                    const fileInfo = document.createElement('div');
+                    fileInfo.style.flex = '1';
+                    fileInfo.innerHTML = `<div style="font-weight: bold; word-break: break-word;">${filePathName}</div>`;
+                    
+                    const downloadBtn = document.createElement('a');
+                    downloadBtn.href = data.message.file_path;
+                    downloadBtn.download = filePathName;
+                    downloadBtn.className = 'btn btn-sm btn-light';
+                    downloadBtn.innerHTML = '<i class="bi bi-download"></i>';
+                    downloadBtn.style.marginLeft = '0.5rem';
+                    
+                    fileDiv.appendChild(icon);
+                    fileDiv.appendChild(fileInfo);
+                    fileDiv.appendChild(downloadBtn);
+                    bubble.appendChild(fileDiv);
+                }
+                
+                const time = document.createElement('div');
+                time.className = 'message-time';
+                const now = new Date();
+                time.textContent = now.toLocaleString('ru-RU', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                
+                messageDiv.appendChild(bubble);
+                messageDiv.appendChild(time);
+                messagesContainer.appendChild(messageDiv);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                
+                updateConversationPreview(currentUserId, `Файл: ${fileName}`);
+            } else {
+                alert('Ошибка отправки: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        })
+        .catch(error => {
+            console.error('Ошибка отправки:', error);
+            alert('Ошибка отправки файла');
+        })
+        .finally(() => {
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = '<i class="bi bi-send"></i> Отправить';
+        });
+    } else {
+        // Отправка текстового сообщения
+        if (!content) {
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = '<i class="bi bi-send"></i> Отправить';
+            return;
         }
-    })
-    .catch(error => {
-        console.error('Ошибка отправки:', error);
-        alert('Ошибка отправки сообщения');
-    })
-    .finally(() => {
-        sendBtn.disabled = false;
-        sendBtn.innerHTML = '<i class="bi bi-send"></i> Отправить';
-    });
+        
+        fetch('/api/messenger/send', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                receiver_id: currentUserId,
+                content: content
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                input.value = '';
+                // Добавляем новое сообщение сразу в чат
+                const messagesContainer = document.getElementById('chatMessages');
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message sent';
+                
+                const bubble = document.createElement('div');
+                bubble.className = 'message-bubble';
+                bubble.textContent = content;
+                
+                const time = document.createElement('div');
+                time.className = 'message-time';
+                const now = new Date();
+                time.textContent = now.toLocaleString('ru-RU', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                
+                messageDiv.appendChild(bubble);
+                messageDiv.appendChild(time);
+                messagesContainer.appendChild(messageDiv);
+                
+                // Прокрутка вниз
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                
+                // Обновляем список диалогов без перезагрузки страницы
+                updateConversationPreview(currentUserId, content);
+            } else {
+                alert('Ошибка отправки: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        })
+        .catch(error => {
+            console.error('Ошибка отправки:', error);
+            alert('Ошибка отправки сообщения');
+        })
+        .finally(() => {
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = '<i class="bi bi-send"></i> Отправить';
+        });
+    }
 }
 
 function handleKeyPress(event) {
@@ -909,6 +1348,196 @@ function endAudioCall() {
     console.log('[INFO] Звонок завершен');
 }
 
+// ===== ФУНКЦИИ ДЛЯ РАБОТЫ С РЕАКЦИЯМИ И ЭМОДЗИ =====
+
+const POPULAR_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '💯', '🎉', '😍', '🙏', '😎', '🤔', '👏', '✨', '🎈', '💪'];
+
+function loadMessageReactions(messageId, messageElement) {
+    fetch(`/api/messenger/message/${messageId}/reactions`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.reactions && data.reactions.length > 0) {
+                const reactionsContainer = document.createElement('div');
+                reactionsContainer.className = 'message-reactions';
+                
+                data.reactions.forEach(reaction => {
+                    const reactionBtn = document.createElement('button');
+                    reactionBtn.className = `reaction-button ${reaction.current_user_reacted ? 'active' : ''}`;
+                    reactionBtn.innerHTML = `<span>${reaction.emoji}</span><span class="reaction-count">${reaction.count}</span>`;
+                    reactionBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        addReaction(messageId, reaction.emoji);
+                    };
+                    reactionBtn.title = `Реакции: ${reaction.users.map(u => u.nickname).join(', ')}`;
+                    reactionsContainer.appendChild(reactionBtn);
+                });
+                
+                // Добавляем кнопку для добавления реакции
+                const addReactionBtn = document.createElement('button');
+                addReactionBtn.className = 'reaction-button';
+                addReactionBtn.textContent = '+';
+                addReactionBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    showReactionPicker(messageId, addReactionBtn);
+                };
+                reactionsContainer.appendChild(addReactionBtn);
+                
+                // Добавляем hover для показа действий с сообщением
+                messageElement.addEventListener('mouseenter', () => {
+                    messageElement.style.position = 'relative';
+                });
+                
+                messageElement.appendChild(reactionsContainer);
+            } else {
+                // Если нет реакций, все равно показываем кнопку для добавления
+                const reactionsContainer = document.createElement('div');
+                reactionsContainer.className = 'message-reactions';
+                
+                const addReactionBtn = document.createElement('button');
+                addReactionBtn.className = 'reaction-button';
+                addReactionBtn.textContent = '+';
+                addReactionBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    showReactionPicker(messageId, addReactionBtn);
+                };
+                reactionsContainer.appendChild(addReactionBtn);
+                messageElement.appendChild(reactionsContainer);
+            }
+        })
+        .catch(error => console.error('Ошибка загрузки реакций:', error));
+}
+
+function showReactionPicker(messageId, buttonElement) {
+    const picker = document.getElementById('emojiPickerForReactions');
+    
+    // Изменяем позицию пикера
+    const rect = buttonElement.getBoundingClientRect();
+    picker.style.position = 'fixed';
+    picker.style.top = (rect.top - 380) + 'px';
+    picker.style.left = (rect.left - 150) + 'px';
+    
+    // Заполняем эмодзи
+    const grid = document.getElementById('reactionEmojiGrid');
+    grid.innerHTML = '';
+    
+    POPULAR_EMOJIS.forEach(emoji => {
+        const item = document.createElement('button');
+        item.className = 'emoji-item';
+        item.textContent = emoji;
+        item.onclick = () => {
+            addReaction(messageId, emoji);
+            picker.classList.remove('active');
+        };
+        grid.appendChild(item);
+    });
+    
+    // Показываем пикер
+    picker.classList.add('active');
+    
+    // Закрываем при клике вне пикера
+    setTimeout(() => {
+        document.addEventListener('click', function closeOnClick(e) {
+            if (!picker.contains(e.target) && e.target !== buttonElement) {
+                picker.classList.remove('active');
+                document.removeEventListener('click', closeOnClick);
+            }
+        });
+    }, 100);
+}
+
+function closeReactionPicker() {
+    document.getElementById('emojiPickerForReactions').classList.remove('active');
+}
+
+function addReaction(messageId, emoji) {
+    fetch('/api/messenger/reaction/add', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            message_id: messageId,
+            emoji: emoji
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success && currentUserId) {
+            // Перезагружаем сообщения для обновления реакций
+            fetch(`/api/messenger/conversation/${currentUserId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayMessages(data.messages);
+                    }
+                });
+        }
+    })
+    .catch(error => console.error('Ошибка добавления реакции:', error));
+}
+
+function toggleEmojiPicker() {
+    const picker = document.getElementById('emojiPickerForText');
+    
+    if (!picker.classList.contains('active')) {
+        // Заполняем эмодзи
+        const grid = document.getElementById('textEmojiGrid');
+        grid.innerHTML = '';
+        
+        POPULAR_EMOJIS.forEach(emoji => {
+            const item = document.createElement('button');
+            item.className = 'emoji-item';
+            item.textContent = emoji;
+            item.onclick = () => {
+                insertEmojiToInput(emoji);
+                picker.classList.remove('active');
+            };
+            grid.appendChild(item);
+        });
+        
+        // Позиционируем пикер
+        const messageInputArea = document.querySelector('.chat-input-area');
+        if (messageInputArea) {
+            const rect = messageInputArea.getBoundingClientRect();
+            picker.style.position = 'fixed';
+            picker.style.top = (rect.top - 400) + 'px';
+            picker.style.left = (rect.left + 50) + 'px';
+        }
+        
+        picker.classList.add('active');
+    } else {
+        picker.classList.remove('active');
+    }
+    
+    // Закрываем при клике вне пикера
+    setTimeout(() => {
+        document.addEventListener('click', function closeOnClick(e) {
+            if (!picker.contains(e.target)) {
+                picker.classList.remove('active');
+                document.removeEventListener('click', closeOnClick);
+            }
+        });
+    }, 100);
+}
+
+function closeEmojiPicker() {
+    document.getElementById('emojiPickerForText').classList.remove('active');
+}
+
+function insertEmojiToInput(emoji) {
+    const input = document.getElementById('messageInput');
+    const cursorPos = input.selectionStart;
+    const textBefore = input.value.substring(0, cursorPos);
+    const textAfter = input.value.substring(cursorPos);
+    
+    input.value = textBefore + emoji + textAfter;
+    
+    // Восстанавливаем позицию курсора
+    const newCursorPos = cursorPos + emoji.length;
+    input.selectionStart = newCursorPos;
+    input.selectionEnd = newCursorPos;
+    input.focus();
+}
 
 // Загружаем счетчик непрочитанных при загрузке страницы
 document.addEventListener('DOMContentLoaded', function() {

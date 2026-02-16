@@ -2,11 +2,16 @@
 
 {% block content %}
 <div class="container mt-4">
-    <h1>Программы тренировок</h1>
+    <h1><i class="bi bi-dumbbell"></i> Программы тренировок</h1>
     
     <div class="row mt-4">
         <div class="col-md-12 mb-4">
-            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createProgramModal">Создать программу</button>
+            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createProgramModal">
+                <i class="bi bi-plus-lg"></i> Создать программу вручную
+            </button>
+            <button class="btn btn-success ms-2" data-bs-toggle="modal" data-bs-target="#aiCreateModal">
+                <i class="bi bi-robot"></i> Создать через ИИ
+            </button>
         </div>
         
         <div class="col-md-12">
@@ -140,29 +145,40 @@ function viewSchedule(schedule) {
                 <form id="aiCreateForm">
                     <div class="mb-3">
                         <label class="form-label">Цель (например: похудение, сила, выносливость)</label>
-                        <input type="text" class="form-control" name="goal" required>
+                        <input type="text" class="form-control" name="goal" placeholder="Введите цель тренировок" required>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Длительность</label>
-                        <input type="text" class="form-control" name="duration" value="1 месяц">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Уровень</label>
+                        <label class="form-label">Уровень подготовки</label>
                         <select class="form-select" name="level">
-                            <option value="начальный">начальный</option>
-                            <option value="средний">средний</option>
-                            <option value="продвинутый">продвинутый</option>
+                            <option value="начальный">начальный (новичок)</option>
+                            <option value="средний">средний (опыт 3-6 месяцев)</option>
+                            <option value="продвинутый">продвинутый (опыт 1+ год)</option>
                         </select>
                     </div>
                     <div class="mb-3">
-                        <button type="submit" class="btn btn-success">Сгенерировать</button>
+                        <label class="form-label">Длительность программы</label>
+                        <input type="text" class="form-control" name="duration" value="1 месяц" placeholder="1 месяц, 8 недель...">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Дополнительные пожелания</label>
+                        <input type="text" class="form-control" name="preferences" placeholder="без прыжков, дома, 30 мин в день...">
+                    </div>
+                    <div class="mb-3">
+                        <button type="submit" class="btn btn-success w-100">
+                            <i class="bi bi-magic"></i> Сгенерировать программу
+                        </button>
                     </div>
                 </form>
 
                 <div id="aiPreview" style="display:none">
-                    <h6>Предпросмотр</h6>
-                    <div id="aiPreviewContent"></div>
-                    <button id="aiSaveBtn" class="btn btn-primary mt-2">Сохранить как программу</button>
+                    <h6><i class="bi bi-check-circle"></i> Предпросмотр программы</h6>
+                    <div id="aiPreviewContent" class="bg-light p-3 rounded mb-3" style="max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.9rem;"></div>
+                    <button id="aiSaveBtn" class="btn btn-primary w-100">
+                        <i class="bi bi-save"></i> Сохранить как программу
+                    </button>
+                    <button class="btn btn-outline-secondary w-100 mt-2" onclick="document.getElementById('aiCreateForm').style.display='block'; document.getElementById('aiPreview').style.display='none';">
+                        <i class="bi bi-pencil"></i> Вернуться к редактированию
+                    </button>
                 </div>
             </div>
         </div>
@@ -222,32 +238,81 @@ document.getElementById('aiCreateForm').addEventListener('submit', async (e)=>{
     const data = {
         goal: form.get('goal'),
         duration: form.get('duration'),
-        level: form.get('level')
+        level: form.get('level'),
+        preferences: form.get('preferences')  // Добавляем пожелания
     };
     document.getElementById('aiPreview').style.display = 'none';
+    
+    // Показываем статус
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    const originalText = submitBtn.innerHTML;
+    submitBtn.innerHTML = '<i class="bi bi-hourglass"></i> Генерирую программу...';
+    submitBtn.disabled = true;
+    
     try{
         const resp = await fetch('/api/generate-training-program', {
-            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
+            method: 'POST', 
+            headers: {'Content-Type':'application/json'}, 
+            body: JSON.stringify(data)
         });
         const json = await resp.json();
         if(!json.success){
             alert('Ошибка ИИ: ' + (json.error || JSON.stringify(json)));
+            submitBtn.innerHTML = originalText;
+            submitBtn.disabled = false;
             return;
         }
         const program = json.program;
-        document.getElementById('aiPreviewContent').innerText = JSON.stringify(program, null, 2);
+        
+        // Форматируем вывод программы
+        let preview = `<strong>${program.title}</strong>\n`;
+        preview += `Длительность: ${program.duration}\n\n`;
+        preview += `========== РАСПИСАНИЕ ==========\n`;
+        
+        for(let day in program.schedule){
+            const exercises = program.schedule[day];
+            preview += `\n${day}:\n`;
+            if(Array.isArray(exercises)){
+                exercises.forEach(ex => {
+                    preview += `  • ${ex}\n`;
+                });
+            }
+        }
+        
+        if(json.warning){
+            preview += `\n⚠️ ${json.warning}`;
+        }
+        
+        document.getElementById('aiPreviewContent').textContent = preview;
         document.getElementById('aiPreview').style.display = 'block';
+        document.getElementById('aiCreateForm').style.display = 'none';
 
         document.getElementById('aiSaveBtn').onclick = async ()=>{
+            const saveBtn = document.getElementById('aiSaveBtn');
+            saveBtn.innerHTML = '<i class="bi bi-hourglass"></i> Сохраняю...';
+            saveBtn.disabled = true;
+            
             const createResp = await fetch('/training-programs/create', {
-                method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(program)
+                method: 'POST', 
+                headers: {'Content-Type':'application/json'}, 
+                body: JSON.stringify(program)
             });
-            if(createResp.ok){ location.reload(); }
-            else{ alert('Ошибка сохранения программы'); }
+            if(createResp.ok){ 
+                alert('✅ Программа успешно создана!');
+                location.reload(); 
+            }
+            else{ 
+                alert('❌ Ошибка сохранения программы'); 
+                saveBtn.innerHTML = '<i class="bi bi-save"></i> Сохранить как программу';
+                saveBtn.disabled = false;
+            }
         };
 
     }catch(err){
-        console.error(err); alert('Ошибка при общении с сервером');
+        console.error(err); 
+        alert('❌ Ошибка при общении с сервером: ' + err.message);
+        submitBtn.innerHTML = originalText;
+        submitBtn.disabled = false;
     }
 });
 </script>

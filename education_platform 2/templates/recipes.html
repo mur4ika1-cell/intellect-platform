@@ -72,7 +72,15 @@
                 <img src="{{ recipe.image_url }}" class="card-img-top" alt="{{ recipe.title }}">
                 {% endif %}
                 <div class="card-body">
-                    <h5 class="card-title">{{ recipe.title }}</h5>
+                    <h5 class="card-title">{{ recipe.title }}
+                        {% if recipe.status == 'pending' %}
+                            <span class="badge bg-warning text-dark">На проверке</span>
+                        {% elif recipe.status == 'rejected' %}
+                            <span class="badge bg-danger">Отклонён</span>
+                        {% elif recipe.status == 'approved' %}
+                            <span class="badge bg-success">Одобрен</span>
+                        {% endif %}
+                    </h5>
                     <div class="nutrition-info mb-3">
                         <small class="text-muted">
                             <i class="bi bi-fire"></i> {{ recipe.calories }} ккал

@@ -61,6 +61,48 @@
             <div id="generatedRecipeResult" class="mt-4"></div>
         </div>
     </div>
+
+    <!-- ========== ГЕНЕРАТОР ПЛАНА ПИТАНИЯ ЧЕРЕЗ ИИ (НОВОЕ) ========== -->
+    <div class="card mb-4 shadow-sm bg-light">
+        <div class="card-header bg-info text-white">
+            <h4 class="mb-0"><i class="bi bi-robot"></i> Генератор плана питания на день (ИИ)</h4>
+        </div>
+        <div class="card-body">
+            <form id="aiMealplanForm" class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Целевые калории</label>
+                    <input type="number" class="form-control" name="calories_target" placeholder="2000">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Количество приемов</label>
+                    <select class="form-select" name="meals_count">
+                        <option value="3">3 приема (завтрак, обед, ужин)</option>
+                        <option value="4">4 приема (+ полдник)</option>
+                        <option value="5">5 приемов (+ 2 снека)</option>
+                        <option value="6">6 приемов (дробное питание)</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Ваши предпочтения</label>
+                    <input type="text" class="form-control" name="preferences" placeholder="куриная грудка, рыба, овощи...">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Исключения</label>
+                    <input type="text" class="form-control" name="restrictions" placeholder="орехи, молочное...">
+                </div>
+                <div class="col-12">
+                    <button type="submit" id="generateMealplanBtn" class="btn btn-info text-white">
+                        <i class="bi bi-magic"></i> Сгенерировать план
+                    </button>
+                    <span id="aiMealplanStatus" class="ms-3 text-muted"></span>
+                </div>
+            </form>
+
+            <!-- Результат генерации плана питания -->
+            <div id="generatedMealplanResult" class="mt-4"></div>
+        </div>
+    </div>
+    <!-- ========== КОНЕЦ ГЕНЕРАТОРА ПЛАНА ========== -->
     <!-- ========== КОНЕЦ ГЕНЕРАТОРА ========== -->
 
     <div class="row">
@@ -350,5 +392,98 @@ async function saveGeneratedRecipe(recipe) {
         alert('❌ Ошибка сохранения');
     }
 }
-</script>
-{% endblock %}
+
+// ========== ГЕНЕРАЦИЯ ПЛАНА ПИТАНИЯ ЧЕРЕЗ ИИ ==========
+document.getElementById('aiMealplanForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const formData = new FormData(form);
+    const payload = {
+        calories_target: formData.get('calories_target') || '',
+        meals_count: formData.get('meals_count') || '3',
+        preferences: formData.get('preferences') || '',
+        restrictions: formData.get('restrictions') || ''
+    };
+
+    const status = document.getElementById('aiMealplanStatus');
+    const btn = document.getElementById('generateMealplanBtn');
+    const resultDiv = document.getElementById('generatedMealplanResult');
+
+    status.textContent = 'Генерация плана питания...';
+    btn.disabled = true;
+    resultDiv.innerHTML = '';
+
+    try {
+        const res = await fetch('/api/generate-mealplan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
+
+        const result = await res.json();
+        
+        if (!result.success) {
+            status.textContent = 'Ошибка: ' + (result.error || 'неизвестная');
+            btn.disabled = false;
+            return;
+        }
+
+        status.textContent = '✅ План готов!';
+        
+        const meals = result.meals;
+        
+        // Отображаем план питания
+        const card = document.createElement('div');
+        card.className = 'card border-info';
+        card.innerHTML = `
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">📋 План питания на день</h5>
+            </div>
+            <div class="card-body">
+                ${meals.map((meal, idx) => `
+                    <div class="meal-card mb-3 p-3 border rounded" style="background-color: #f8f9fa;">
+                        <h6 class="fw-bold text-primary">${idx + 1}. ${meal.meal_type}</h6>
+                        <p class="mb-2"><strong>Блюда:</strong></p>
+                        <ul class="mb-2">
+                            ${meal.food_items.map(item => `<li>${item}</li>`).join('')}
+                        </ul>
+                        <div class="row text-center small">
+                            <div class="col-3">
+                                <small class="text-muted">Калории</small>
+                                <br><strong>${meal.calories} ккал</strong>
+                            </div>
+                            <div class="col-3">
+                                <small class="text-muted">Белки</small>
+                                <br><strong>${meal.proteins}г</strong>
+                            </div>
+                            <div class="col-3">
+                                <small class="text-muted">Жиры</small>
+                                <br><strong>${meal.fats}г</strong>
+                            </div>
+                            <div class="col-3">
+                                <small class="text-muted">Углеводы</small>
+                                <br><strong>${meal.carbs}г</strong>
+                            </div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+            <div class="card-footer text-muted text-center">
+                <small>💡 План питания сгенерирован ИИ. Вы можете редактировать или добавлять блюда в дневник питания.</small>
+            </div>
+        `;
+        
+        resultDiv.appendChild(card);
+        
+    } catch (err) {
+        console.error(err);
+        status.textContent = '❌ Ошибка: ' + err.message;
+    } finally {
+        btn.disabled = false;
+    }
+});
+</script>{% endblock %}
